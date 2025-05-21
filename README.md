@@ -26,13 +26,13 @@ These are passed directly to the Google Photos API; supported formats depend on 
 
 ```bash
 pip install -r requirements.txt
-
+```
 ## Usage
 
 ### Basic Upload
 ```bash
 python3 gphotos_uploader.py --path "/absolute/path/to/photos-folders"
-
+```
 ### Folder Structure
 
 ```bash
@@ -42,7 +42,7 @@ python3 gphotos_uploader.py --path "/absolute/path/to/photos-folders"
     │   └── VID_0001.MOV
     ├── Album Folder 2/
     │   └── IMG_1000.JPG
-
+```
 This will:
 
 - Create an album for each subfolder with subfolder naming
@@ -53,6 +53,7 @@ This will:
 
 ```bash
 python3 gphotos_uploader.py --path "/absolute/path/to/photos-folders" --retry-failed
+```
 
 This will:
 
