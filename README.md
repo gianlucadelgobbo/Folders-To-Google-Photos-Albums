@@ -27,12 +27,27 @@ These are passed directly to the Google Photos API; supported formats depend on 
 ```bash
 pip install -r requirements.txt
 ```
+
 ## Usage
 
 ### Basic Upload
 ```bash
 python3 gphotos_uploader.py --path "/absolute/path/to/photos-folders"
 ```
+
+### Additional Options
+
+```bash
+# Create albums without uploading files
+python3 gphotos_uploader.py --path "/path/to/folders" --create-albums-only
+
+# Fix EXIF dates using folder names
+python3 gphotos_uploader.py --path "/path/to/folders" --update-exif-from-folder-if-mismatch
+
+# Simulate actions without making changes
+python3 gphotos_uploader.py --path "/path/to/folders" --dry-run
+```
+
 ### Folder Structure
 
 ```bash
@@ -43,6 +58,7 @@ python3 gphotos_uploader.py --path "/absolute/path/to/photos-folders"
     ├── Album Folder 2/
     │   └── IMG_1000.JPG
 ```
+
 This will:
 
 - Create an album for each subfolder with subfolder naming
@@ -60,6 +76,29 @@ This will:
 - Load `failed_uploads.json`
 - Attempt to re-upload failed files
 - Remove successfully reprocessed files from the failure list
+
+### Listener Mode
+
+```bash
+python3 gphotos_uploader.py --path "/path/to/folders" --listener
+```
+
+Continuously monitors the `ExifErrors` category in `failed_uploads.json` and attempts to process new files as they appear.
+
+## State Management
+
+- `upload_state.json` is updated immediately after each successful file upload
+- Files are tracked by name in their respective album entries
+- State is preserved between runs to prevent duplicate uploads
+
+## Error Handling
+
+- Failed uploads are categorized by error type in `failed_uploads.json`:
+  - `UploadError`: Failed to upload file
+  - `AddToAlbumError`: Failed to add file to album
+  - `TooLarge`: Files exceeding 10GB limit
+  - `ExifErrors`: Issues with EXIF data
+  - `UnsupportedFormat`: Unsupported file types
 
 ## Files
 
