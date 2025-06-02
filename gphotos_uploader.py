@@ -315,23 +315,32 @@ def add_to_album(upload_token, album_id, description, folder_name):
             log_error(f"[ALBUM] Error response from API: {response.status_code} - {response.text}")
             raise Exception(f"Error adding to album: {response.text}")
             
-        # Check if the upload was successful
+        # Parse response
         result = response.json()
-        if 'newMediaItemResults' in result:
-            for item in result['newMediaItemResults']:
-                if 'status' in item:
-                    status = item['status']
-                    if status.get('code') != 0:
-                        error_msg = status.get('message', 'Unknown error')
-                        log_error(f"[ALBUM] Failed to add media item: {error_msg}")
-                        raise Exception(f"Failed to add media item: {error_msg}")
-                    else:
-                        # Success case
-                        log_warn(f"[ALBUM] Successfully added photo to album: {description}")
-                        return True
-                    
-        log_warn(f"[ALBUM] Successfully added photo to album: {description}")
-        return True
+        log_warn(f"[ALBUM] API Response: {json.dumps(result, indent=2)}")
+        
+        if 'newMediaItemResults' not in result:
+            log_error(f"[ALBUM] Unexpected API response format: {result}")
+            raise Exception("Unexpected API response format")
+            
+        for item in result['newMediaItemResults']:
+            if 'status' not in item:
+                log_error(f"[ALBUM] Missing status in response: {item}")
+                raise Exception("Missing status in response")
+                
+            status = item['status']
+            if status.get('code') == 0:
+                log_warn(f"[ALBUM] Successfully added photo to album: {description}")
+                return True
+            else:
+                error_msg = status.get('message', 'Unknown error')
+                log_error(f"[ALBUM] Failed to add media item: {error_msg}")
+                raise Exception(f"Failed to add media item: {error_msg}")
+                
+        # If we get here, something went wrong
+        log_error(f"[ALBUM] No success status found in response: {result}")
+        raise Exception("No success status found in response")
+        
     except Exception as e:
         log_error(f"[ALBUM] Failed to add photo to album: {str(e)}")
         raise
@@ -737,18 +746,21 @@ else:
         
         # Processa un file alla volta
         for f in found_files:
-            log_warn(f"[DEBUG] Checking file extension: {f.suffix} (lowercase: {f.suffix.lower()})")
+            # Skip already processed files in both dry-run and normal mode
+            if f.name in files:
+                if DRY_RUN:
+                    log_warn(f"[DRY-RUN] Would skip already processed file: {f.name}")
+                continue
+                
+            # Only log if we're actually going to process the file
             if f.suffix.lower() in SUPPORTED_EXIF_EXT:
-                # Skip already processed files in both dry-run and normal mode
-                if f.name in files:
-                    if DRY_RUN:
-                        log_warn(f"[DRY-RUN] Skipping already processed file: {f.name}")
-                    continue
-                    
-                # Process file directly
+                if DRY_RUN:
+                    log_warn(f"[DRY-RUN] Would process {f.name} ({f.suffix.lower()})")
+                else:
+                    log_warn(f"Processing {f.name} ({f.suffix.lower()})")
                 process_file(f, folder_name, album_id, folder_path, already_uploaded=False)
             else:
-                log_warn(f"❌ File not valid EXIF format: {f.name}")
+                log_warn(f"Skipping unsupported format: {f.name} ({f.suffix.lower()})")
             
             # Forza la liberazione delle risorse dopo ogni file
             del f
