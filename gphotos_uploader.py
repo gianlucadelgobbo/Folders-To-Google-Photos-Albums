@@ -329,7 +329,7 @@ def add_to_album(upload_token, album_id, description, folder_name):
                 raise Exception("Missing status in response")
                 
             status = item['status']
-            if status.get('code') == 0:
+            if status.get('code') == 0 or status.get('message') == 'Success':
                 log_warn(f"[ALBUM] Successfully added photo to album: {description}")
                 return True
             else:
