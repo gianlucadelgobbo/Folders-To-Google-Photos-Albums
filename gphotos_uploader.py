@@ -304,8 +304,18 @@ def add_to_album(upload_token, album_id, description, folder_name):
             response = session.post("https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate", json=body)
             
         if response.status_code != 200:
-            log_error(f"[ALBUM] Error adding photo to album: {response.status_code} - {response.text}")
-            raise Exception(f"Errore add_to_album: {response.text}")
+            log_error(f"[ALBUM] Error response from API: {response.status_code} - {response.text}")
+            raise Exception(f"Error adding to album: {response.text}")
+            
+        # Check if the upload was successful
+        result = response.json()
+        if 'newMediaItemResults' in result:
+            for item in result['newMediaItemResults']:
+                if 'status' in item and item['status'].get('code') != 0:
+                    error_msg = item['status'].get('message', 'Unknown error')
+                    log_error(f"[ALBUM] Failed to add media item: {error_msg}")
+                    raise Exception(f"Failed to add media item: {error_msg}")
+                    
         log_warn(f"[ALBUM] Successfully added photo to album: {description}")
     except Exception as e:
         log_error(f"[ALBUM] Failed to add photo to album: {str(e)}")
@@ -519,24 +529,26 @@ def process_file(file: Path, folder_name: str, album_id: str, folder_path: Path,
         return
 
     try:
+        log_warn(f"[UPLOAD] Attempting to upload file: {file.name}")
         upload_token = upload_file(str(file))
         # Save state immediately after successful upload
         state[folder_name]['files'].append(file.name)
         save_json(STATE_FILE, state)
         log_warn(f"✅ Uploaded {file.name} to {folder_name}")
     except Exception as e:
-        log_error(f"Errore upload '{file}': {e}", exc_info=True)
+        log_error(f"❌ Upload error for '{file}': {str(e)}", exc_info=True)
         add_failure("UploadError", folder_name, file.name, folder_path)
         total_failed += 1
         return False
 
     try:
+        log_warn(f"[ALBUM] Attempting to add {file.name} to album {folder_name}")
         add_to_album(upload_token, album_id, file.name, folder_name)
         logging.info(f"✅ {file.name} → {folder_name}")
         total_uploaded += 1
         return True
     except Exception as e:
-        log_error(f"Errore add_to_album '{file}': {e}", exc_info=True)
+        log_error(f"❌ Album error for '{file}': {str(e)}", exc_info=True)
         add_failure("AddToAlbumError", folder_name, file.name, folder_path)
         total_failed += 1
         return False
