@@ -18,6 +18,7 @@ import re
 from datetime import datetime
 import gc
 from typing import Tuple, Optional
+import urllib.parse
 
 # Suppress urllib3 SSL warnings
 warnings.filterwarnings('ignore', category=Warning)
@@ -235,30 +236,40 @@ def upload_file(file_path):
         add_failure("TooLarge", folder_name, file_name, Path(file_path).parent)
         raise Exception(f"File too large: {file_size} > 10GB")
 
+    # URL encode the filename for the header
+    encoded_filename = urllib.parse.quote(file_name)
+
     headers = {
         'Content-Type': 'application/octet-stream',
-        'X-Goog-Upload-File-Name': file_name,
+        'X-Goog-Upload-File-Name': encoded_filename,
         'X-Goog-Upload-Protocol': 'raw',
     }
 
     try:
+        log_warn(f"[UPLOAD] Opening file for reading: {file_path}")
         with open(file_path, 'rb') as f:
             log_warn(f"[UPLOAD] Sending file to Google Photos API...")
-            response = session.post(
-                "https://photoslibrary.googleapis.com/v1/uploads",
-                data=f,
-                headers=headers,
-                timeout=360
-            )
-
-        if response.status_code != 200:
-            log_error(f"[UPLOAD] Error response from API: {response.status_code} - {response.text}")
-            raise Exception(f"Errore upload file: {response.text}")
-            
-        log_warn(f"[UPLOAD] Successfully uploaded {file_name}")
-        return response.text
+            try:
+                response = session.post(
+                    "https://photoslibrary.googleapis.com/v1/uploads",
+                    data=f,
+                    headers=headers,
+                    timeout=360
+                )
+                log_warn(f"[UPLOAD] Got response from API: {response.status_code}")
+                
+                if response.status_code != 200:
+                    error_msg = f"[UPLOAD] Error response from API: {response.status_code} - {response.text}"
+                    log_error(error_msg)
+                    raise Exception(error_msg)
+                    
+                log_warn(f"[UPLOAD] Successfully uploaded {file_name}")
+                return response.text
+            except Exception as e:
+                log_error(f"[UPLOAD] Error during API request: {str(e)}", exc_info=True)
+                raise
     except Exception as e:
-        log_error(f"[UPLOAD] Failed to upload {file_name}: {str(e)}")
+        log_error(f"[UPLOAD] Failed to upload {file_name}: {str(e)}", exc_info=True)
         raise
 
 @retry(wait=wait_fixed(5), stop=stop_after_attempt(5))
