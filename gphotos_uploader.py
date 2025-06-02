@@ -611,6 +611,7 @@ total_failed = 0
 if RETRY_FAILED:
     log_warn("🔁 Modalità retry: elaborazione file falliti da failed_uploads.json...\n")
     for error_type in ["UploadError", "AddToAlbumError"]:
+        log_warn(f"[RETRY] Processing {error_type} failures...")
         for folder_name in list(failures.get(error_type, {}).keys()):
             entry = failures[error_type][folder_name]
             folder_path = Path(entry.get("path"))
@@ -641,10 +642,24 @@ if RETRY_FAILED:
 
             for file_name in file_list[:]:
                 file = folder_path / file_name
-                if process_file(file, folder_name, album_id, folder_path):
-                    failures[error_type][folder_name]["files"].remove(file.name)
+                log_warn(f"[RETRY] Processing file: {file_name}")
+                log_warn(f"[DEBUG] File extension: {file.suffix} (lowercase: {file.suffix.lower()})")
+                
+                # Skip files with unsupported extensions
+                if file.suffix.lower() not in SUPPORTED_EXIF_EXT:
+                    log_warn(f"❌ Skipping file with unsupported extension: {file_name}")
+                    failures[error_type][folder_name]["files"].remove(file_name)
                     if not failures[error_type][folder_name]["files"]:
                         del failures[error_type][folder_name]
+                    continue
+
+                if process_file(file, folder_name, album_id, folder_path):
+                    log_warn(f"✅ Successfully retried file: {file_name}")
+                    failures[error_type][folder_name]["files"].remove(file_name)
+                    if not failures[error_type][folder_name]["files"]:
+                        del failures[error_type][folder_name]
+                else:
+                    log_warn(f"❌ Failed to retry file: {file_name}")
 
     save_json(FAILED_FILE, failures)
 
@@ -695,6 +710,7 @@ else:
         
         # Processa un file alla volta
         for f in found_files:
+            log_warn(f"[DEBUG] Checking file extension: {f.suffix} (lowercase: {f.suffix.lower()})")
             if f.suffix.lower() in SUPPORTED_EXIF_EXT:
                 # Skip already processed files in both dry-run and normal mode
                 if f.name in files:
