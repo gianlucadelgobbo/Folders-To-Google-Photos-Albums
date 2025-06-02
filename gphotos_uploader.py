@@ -236,12 +236,9 @@ def upload_file(file_path):
         add_failure("TooLarge", folder_name, file_name, Path(file_path).parent)
         raise Exception(f"File too large: {file_size} > 10GB")
 
-    # URL encode the filename for the header
-    encoded_filename = urllib.parse.quote(file_name)
-
     headers = {
         'Content-Type': 'application/octet-stream',
-        'X-Goog-Upload-File-Name': encoded_filename,
+        'X-Goog-Upload-File-Name': file_name,
         'X-Goog-Upload-Protocol': 'raw',
     }
 
@@ -322,12 +319,19 @@ def add_to_album(upload_token, album_id, description, folder_name):
         result = response.json()
         if 'newMediaItemResults' in result:
             for item in result['newMediaItemResults']:
-                if 'status' in item and item['status'].get('code') != 0:
-                    error_msg = item['status'].get('message', 'Unknown error')
-                    log_error(f"[ALBUM] Failed to add media item: {error_msg}")
-                    raise Exception(f"Failed to add media item: {error_msg}")
+                if 'status' in item:
+                    status = item['status']
+                    if status.get('code') != 0:
+                        error_msg = status.get('message', 'Unknown error')
+                        log_error(f"[ALBUM] Failed to add media item: {error_msg}")
+                        raise Exception(f"Failed to add media item: {error_msg}")
+                    else:
+                        # Success case
+                        log_warn(f"[ALBUM] Successfully added photo to album: {description}")
+                        return True
                     
         log_warn(f"[ALBUM] Successfully added photo to album: {description}")
+        return True
     except Exception as e:
         log_error(f"[ALBUM] Failed to add photo to album: {str(e)}")
         raise

@@ -1,0 +1,240 @@
+2025-06-02 12:45:37,814 - INFO - "GET /?state=MdfGSEAhjuOr6uD4Y1aGLPOfA67WY1&code=4/0AUJR-x4dpjyo0Jifu0ByCCfy8I9fze8Xg86cODTdkFycJ0s2Lh1_-pOeBYjRpxyVbybryw&scope=https://www.googleapis.com/auth/photoslibrary.readonly HTTP/1.1" 200 65
+2025-06-02 12:45:38,020 - INFO - Starting Google Photos cache build...
+2025-06-02 12:45:38,940 - INFO - Found 2 albums
+2025-06-02 12:45:38,940 - INFO - Processing album: _LCF _Selecta_RAW
+2025-06-02 12:45:39,775 - INFO - Processing album: _LCF _Selecta_LOW
+2025-06-02 12:45:41,092 - INFO - Saved cache with 2 albums
+2025-06-02 12:45:41,093 - INFO - 
+Google Photos Cache Summary:
+2025-06-02 12:45:41,093 - INFO - Total albums: 2
+2025-06-02 12:45:41,093 - INFO - Total items: 76
+2025-06-02 12:45:41,093 - INFO - 
+Per-album summary:
+2025-06-02 12:45:41,093 - INFO - 
+_LCF _Selecta_LOW:
+2025-06-02 12:45:41,093 - INFO -   Items: 38
+2025-06-02 12:45:41,093 - INFO -   Media types:
+2025-06-02 12:45:41,093 - INFO -     image/jpeg: 38
+2025-06-02 12:45:41,093 - INFO - 
+_LCF _Selecta_RAW:
+2025-06-02 12:45:41,093 - INFO -   Items: 38
+2025-06-02 12:45:41,093 - INFO -   Media types:
+2025-06-02 12:45:41,094 - INFO -     image/jpeg: 38
+2025-06-02 12:54:39,702 - INFO - "GET /?state=W9WvBy49ZC8QSKaiOEduAYQB5RLD7U&code=4/0AUJR-x4BPUsqSiy15uXEZodfWh8ZFuluRhc_ui31m-hr6K0T3J-QOpFDQx4JXtnEvQTTJA&scope=https://www.googleapis.com/auth/photoslibrary.readonly HTTP/1.1" 200 65
+2025-06-02 12:54:41,029 - INFO - Starting Google Photos cache build...
+2025-06-02 12:54:41,890 - INFO - Found 1 albums
+2025-06-02 12:54:41,890 - INFO - Processing album: _LCF _Selecta_RAW
+2025-06-02 12:54:42,543 - INFO - 
+DEBUG - Raw API response for first item:
+2025-06-02 12:54:42,543 - INFO - {
+  "id": "AIfr0v9969PWUhKTOVr2C8wCTAJyWMPWs4HiEVeLIa43dTrbLcKg6HJmhf2iB_9uBszQK5X3LUVhwQxWd7wf-5vpSU4PliGZ-g",
+  "description": "IMG_1849.jpg",
+  "productUrl": "https://photos.google.com/lr/album/AIfr0v8Hr25eQI6g_0FbCZjNOE3omm-3VeMn34rZ0eBeiX16mIaW_Gm7f94eqv-wB8XyvxAs43a_/photo/AIfr0v9969PWUhKTOVr2C8wCTAJyWMPWs4HiEVeLIa43dTrbLcKg6HJmhf2iB_9uBszQK5X3LUVhwQxWd7wf-5vpSU4PliGZ-g",
+  "baseUrl": "https://lh3.googleusercontent.com/lr/AAJ1LKdhxyLohYzTuahRbH3KT5VP5Fpbhln7iS5ulmmKeOejM2S8-UjTlDbRVrC1IcITVI289gBRM0R9d-Iybq67n15wJmAxWbnmRenQsWUCaq05-0EC_-0jJLxFEEZmL7ph0Ee0wLZayOEJg-CGNHyTfwqoGESiOIBXjcMSCvW3N7fN68QIZZ6FIf67zRP-MLWCMVlzOv1NE9VwFv22iFwhff8pGAtxNf4VqoIQyvnRv4g_OOavrXvi8GfE13TbxGxr_3h81KPEUH7ujyu7_nTvBahrRF1nQ4NSDNQWuavfDhn9duvFyZsyQk3C0722vg8vV597rHckgaLVEgw9lzpYL4Y9EZzoZgkI0chriETdYzPyQH6qsBddqskYs2YnDsEhAuVO5OdN79xKC-0QC6drEGpzxY2S6LI9lpfrhV_XyH7yFcJS0Lh2XX1Igd2_ctKyIj9j7u5SIcwfHiSnLyC_R8AAbUgYtxsarqzhEhbYmjHzAu7HastTeMqvKwlSvnzYNGh8OV90liPimegnIBZFzJ0525lYOCcww5XhAqOBKeGkeg1Faiaf6N6y_tmJIobSTNfDlCulOi4B6AEpHi4fbl42MOQ0iU_KTRgC_KroP2qCZPJDlkMU753xkdhXFyUFQqH9fvL1W-JOsmY1G5lolHJXDKrfFhpbIqACmvrd5z8dm_RQuOg8tVvX7Nkgi-YWKTNLB15TagaJpnynu3-z13YWC_BVDd1glg4sVlSZ2spXBRnUr9CEv_uAhVFHsCw_Dgdu3tMM5jdd3cNf7WSunenLFrgyNO_lj3iFntZOeoraBUPITGErVYuxEiEumeUQfigTaJgQy1XtrGmogVeTFJwWOnWwXuoOvbaQxwi7dg16wuLSl5dBlHoRvRahN-lhShrrh46oXQPInnEGRiDuaoqjfJHlpfCg-56A91ZxFcXT0EhKqL22RD6mYd2Ao_9N9u1SqmXuwYtIMYg05yM36ZvH6JTXdvmSfzMVZuIgdMeZ3rg8L-jbmjvg-fpJV-cTynmMbA0",
+  "mimeType": "image/jpeg",
+  "mediaMetadata": {
+    "creationTime": "2025-06-02T01:11:57.359Z",
+    "width": "5184",
+    "height": "3456",
+    "photo": {}
+  },
+  "filename": "IMG_1849.jpg"
+}
+2025-06-02 12:54:42,547 - INFO - Saved cache with 1 albums
+2025-06-02 12:54:42,548 - INFO - 
+Google Photos Cache Summary:
+2025-06-02 12:54:42,548 - INFO - Total albums: 1
+2025-06-02 12:54:42,548 - INFO - Total items: 38
+2025-06-02 12:54:42,548 - INFO - 
+Per-album summary:
+2025-06-02 12:54:42,548 - INFO - 
+_LCF _Selecta_RAW:
+2025-06-02 12:54:42,548 - INFO -   Items: 38
+2025-06-02 12:54:42,548 - INFO -   Media types:
+2025-06-02 12:54:42,549 - INFO -     image/jpeg: 38
+2025-06-02 12:54:42,549 - INFO - 
+  Example dates from first item:
+2025-06-02 12:54:42,549 - INFO -     creationTime: 2025-06-02T01:11:57.359Z
+2025-06-02 12:59:13,709 - INFO - Loaded existing cache with 1 albums
+2025-06-02 12:59:18,273 - INFO - "GET /?state=nhhw4C4DYpDrK1KKW9qDtQYkYUKpYy&code=4/0AUJR-x7nx5vCBXrvg28WCyJ3CnbdMV05Jxr-VbcN7IC7CE9ZqpwkVhtbRBQCyW_Y4YptiA&scope=https://www.googleapis.com/auth/photoslibrary.readonly HTTP/1.1" 200 65
+2025-06-02 12:59:18,541 - INFO - Starting Google Photos cache build...
+2025-06-02 13:00:19,373 - INFO - Found 1372 albums
+2025-06-02 13:00:19,373 - INFO - Skipping existing album: _LCF _Selecta_RAW
+2025-06-02 13:00:19,374 - INFO - Processing album: _LCF _Selecta_LOW
+2025-06-02 13:00:20,214 - INFO - Processing album: 2022-12 LCF Videos
+2025-06-02 13:00:21,443 - INFO - Processing album: 2021-09 LCF SetUp Videos
+2025-06-02 13:00:22,295 - INFO - Processing album: 2021-11 LCF Stefania
+2025-06-02 13:00:23,256 - INFO - Processing album: 2021-09 LCF SetUp
+2025-06-02 13:00:24,447 - INFO - Processing album: 2025-05 Notte dei Musei Gianluca 
+2025-06-02 13:00:25,237 - INFO - Processing album: 2025-05 Notte dei Musei Drone
+2025-06-02 13:00:26,121 - INFO - Processing album: 2025-05 Osaka IG stories
+2025-06-02 13:00:28,383 - INFO - Processing album: Sopralluogo Circolo degli Illuminati 
+2025-06-02 13:00:29,198 - INFO - Processing album: 2024-12 Fotonica Videos REPORT
+2025-06-02 13:00:30,412 - INFO - Processing album: 2024-12 Fotonica 20 Dicembre All
+2025-06-02 13:00:31,189 - INFO - Processing album: 2024-12 Fotonica Videos
+2025-06-02 13:00:32,599 - INFO - Processing album: 2024-12 Fotonica WS Bambini 14 Dicembre
+2025-06-02 13:00:33,292 - INFO - Processing album: 2024-12 Fotonica _Selecta biz
+2025-06-02 13:00:34,004 - INFO - Processing album: 2024-12 Fotonica Sofia Videos insta360
+2025-06-02 13:00:34,740 - INFO - Processing album: 2024-12 Fotonica Residenza
+2025-06-02 13:00:35,935 - INFO - Processing album: 2024-12 Fotonica Residenza Videos
+2025-06-02 13:00:36,792 - INFO - Processing album: 2024-12 Fotonica 11 Dicembre
+2025-06-02 13:00:37,497 - INFO - Processing album: 2024-12 Fotonica DOME
+2025-06-02 13:00:38,836 - INFO - Processing album: 2024-12 Fotonica DOME Drone Videos
+2025-06-02 13:00:39,504 - INFO - Processing album: 2024-12 Fotonica DOME Videos
+2025-06-02 13:00:40,227 - INFO - Processing album: 2024-12 Fotonica 9 Dicembre
+2025-06-02 13:00:40,932 - INFO - Processing album: 2024-12 Fotonica Sofia Videos
+2025-06-02 13:00:41,665 - INFO - Processing album: 2024-10 VisualSound Festival DAY 3
+2025-06-02 13:00:42,439 - INFO - Processing album: 2024-10 Visual Sound Festival 
+2025-06-02 13:00:44,528 - INFO - Processing album: 2024-10 VisualSound Festival DAY 2
+2025-06-02 13:00:45,329 - INFO - Processing album: 2024-10 VisualSound Festival DAY 1
+2025-06-02 13:00:46,270 - INFO - Processing album: 2024-09 LCF _Selecta
+2025-06-02 13:00:47,002 - INFO - Processing album: 2024-09 LCF
+2025-06-02 13:00:47,792 - INFO - Processing album: 2024-09 LCF Gerhard
+2025-06-02 13:00:48,558 - INFO - Processing album: 2023-12 Fotonica _Selecta
+2025-06-02 13:00:49,348 - INFO - Processing album: 2024-04 ElectroKids Cristiano Videos 
+2025-06-02 13:00:50,106 - INFO - Processing album: 2024-04 Electrokids Gianluca Immersiva Videos 
+2025-06-02 13:00:51,732 - INFO - Processing album: 2024-04 ElectroKids Gianluca Videomapping Videos 
+2025-06-02 13:00:52,908 - INFO - Processing album: 2024-04 ElectroKids Ruben
+2025-06-02 13:00:54,611 - INFO - Processing album: 2024-04 ElectroKids Ruben Videos 
+2025-06-02 13:00:55,398 - INFO - Processing album: 2024-04 Electrokids Gianluca Immersiva
+2025-06-02 13:00:56,133 - INFO - Processing album: 2024-04 ElectroKids Gianluca Videomapping
+2025-06-02 13:00:56,854 - INFO - Processing album: 2024-04 ElectroKids Jacopo
+2025-06-02 13:01:15,301 - INFO - Processing album: 2024-04 ElectroKids Jacopo Videos 
+2025-06-02 13:01:17,803 - INFO - Processing album: 2024-04 ElectroKids Gianluca VR
+2025-06-02 13:01:38,994 - INFO - Processing album: 2024-04 ElectroKids Gianluca VR Videos 
+2025-06-02 13:01:40,150 - INFO - Processing album: 2024-04 Electrokids Gianluca Workshops
+2025-06-02 13:01:40,979 - INFO - Processing album: 2022-12 LCF Gianluca
+2025-06-02 13:01:42,357 - INFO - Processing album: 2022-12 LCF Grazie
+2025-06-02 13:01:43,107 - INFO - Processing album: 2020-10 LCF gianluca
+2025-06-02 13:01:47,416 - INFO - Processing album: 2020-10 LCF 12 ott Rob
+2025-06-02 13:01:48,113 - INFO - Processing album: 2020-10 LCF _Selecta rob DAY #4 _Selecta
+2025-06-02 13:01:48,823 - INFO - Processing album: 2017-09 LCF Press
+2025-06-02 13:01:49,541 - INFO - Processing album: 2014-09 LCF Cool79
+2025-06-02 13:01:50,351 - INFO - Processing album: 2015-09 LCF Cool 2015-09-05 hi
+2025-06-02 13:01:51,015 - INFO - Processing album: 2015-09 LCF Cool 2015-09-07
+2025-06-02 13:01:51,747 - INFO - Processing album: 2015-09 LCF Cool 2015-09-07 hi
+2025-06-02 13:01:52,440 - INFO - Processing album: 2015-09 LCF Cool 2015-09-09 hi
+2025-06-02 13:01:53,103 - INFO - Processing album: 2015-09 LCF Cool 2015-09-11 hi
+2025-06-02 13:01:53,786 - INFO - Processing album: 2015-09 LCF _Selecta
+2025-06-02 13:01:54,467 - INFO - Processing album: 2020-12 Fotonica VIDEO
+2025-06-02 13:01:55,164 - INFO - Processing album: 2021-11 Fotonica VIDEO
+2025-06-02 13:01:55,913 - INFO - Processing album: 2021-11 Fotonica TNX
+2025-06-02 13:01:56,571 - INFO - Processing album: 2021-11 Fotonica2021-11 Fotonica Selecta
+2025-06-02 13:01:57,798 - INFO - Processing album: 2022-11 Fotonica WORKSHOP Foto
+2025-06-02 13:01:58,442 - INFO - Processing album: 2020-12 Fotonica day 3 - 18 dic robbi
+2025-06-02 13:01:59,300 - INFO - Processing album: 2020-12 Fotonica day 4 - 19 dic
+2025-06-02 13:02:00,022 - INFO - Processing album: 2020-12 Fotonica day 4 - 19 dic screenS
+2025-06-02 13:02:00,696 - INFO - Processing album: 2020-12 Fotonica ws ableton
+2025-06-02 13:02:01,444 - INFO - Processing album: 2020-12 Fotonica ws cinema
+2025-06-02 13:02:02,676 - INFO - Processing album: 2020-12 Fotonica ws touch
+2025-06-02 13:02:03,341 - INFO - Processing album: 2020-12 Fotonica x press
+2025-06-02 13:02:04,044 - INFO - Processing album: 2020-12 Fotonica GRAZIE
+2025-06-02 13:02:04,764 - INFO - Processing album: 2020-12 Fotonica day 1 - 11 dic 01-talk
+2025-06-02 13:02:05,441 - INFO - Processing album: 2020-12 Fotonica day 1 - 11 dic 02-av-ultravioletto
+2025-06-02 13:02:06,115 - INFO - Processing album: 2020-12 Fotonica day 1 - 11 dic 03-av-chana
+2025-06-02 13:02:06,778 - INFO - Processing album: 2020-12 Fotonica day 1 - 11 dic 04-vjdjset-ket
+2025-06-02 13:02:07,453 - INFO - Processing album: 2020-12 Fotonica day 1 - 11 dic 05-vjdjset-memoli
+2025-06-02 13:02:08,114 - INFO - Processing album: 2020-12 Fotonica day 1 - 11 dic _day 1 screen perf
+2025-06-02 13:02:08,796 - INFO - Processing album: 2020-12 Fotonica day 1 - 11 dic _mondo
+2025-06-02 13:02:09,468 - INFO - Processing album: 2020-12 Fotonica day 16 dic- coldcut
+2025-06-02 13:02:10,631 - INFO - Processing album: 2020-12 Fotonica day 16 dic- coldcut robbi
+2025-06-02 13:02:11,235 - INFO - Processing album: 2020-12 Fotonica day 2 - 12 dic 01-av-synch
+2025-06-02 13:02:11,978 - INFO - Processing album: 2020-12 Fotonica day 2 - 12 dic 02-av-this is not a symptom
+2025-06-02 13:02:12,616 - INFO - Processing album: 2020-12 Fotonica day 2 - 12 dic 03-vjdjset-nvs
+2025-06-02 13:02:13,264 - INFO - Processing album: 2020-12 Fotonica day 2 - 12 dic 04-vjdjset-vigas
+2025-06-02 13:02:14,049 - INFO - Processing album: 2020-12 Fotonica day 2 - 12 dic mondo
+2025-06-02 13:02:14,689 - INFO - Processing album: 2020-12 Fotonica day 2 - 12 dic screen perf
+2025-06-02 13:02:15,423 - INFO - Processing album: 2020-12 Fotonica day 20 dic
+2025-06-02 13:02:16,071 - INFO - Processing album: 2020-12 Fotonica day 20 dic screenS
+2025-06-02 13:02:16,809 - INFO - Processing album: 2020-12 Fotonica day 3 - 18 dic
+2025-06-02 13:02:17,462 - INFO - Processing album: 2020-12 Fotonica day 3 - 18 dic mondo
+2025-06-02 13:02:18,153 - INFO - Processing album: 2020-12 Fotonica day 3 - 18 dic mondo screens
+2025-06-02 13:02:18,867 - INFO - Processing album: 2020-12 Fotonica day 3 - 18 dic screens 18
+2025-06-02 13:02:19,576 - INFO - Processing album: 2020-12 Fotonica mondo
+2025-06-02 13:02:21,875 - INFO - Processing album: 2019-12 Fotonica Selecta best logo_resize
+2025-06-02 13:02:23,569 - INFO - Processing album: 2019-12 Fotonica Selecta
+2025-06-02 13:02:24,362 - INFO - Processing album: 2019-12 Fotonica Selecta best
+2025-06-02 13:02:26,021 - INFO - Processing album: 2019-12 Fotonica installations
+2025-06-02 13:02:26,703 - INFO - Processing album: 2019-12 Fotonica lun 02-12 liz
+2025-06-02 13:02:27,358 - INFO - Processing album: 2019-12 Fotonica sab 30-11 Selecta
+2025-06-02 13:02:28,996 - INFO - Processing album: 2019-12 Fotonica workshop
+2025-06-02 13:02:29,761 - INFO - Processing album: 2018-12 Fotonica AV light installations
+2025-06-02 13:02:30,469 - INFO - Processing album: 2018-12 Fotonica Selecta
+2025-06-02 13:02:31,314 - INFO - Processing album: 2018-12 Fotonica Selecta 2
+2025-06-02 13:02:33,189 - INFO - Processing album: 2018-12 Fotonica tnx
+2025-06-02 13:02:33,908 - INFO - Processing album: 2018-12 Fotonica 14 ven AntonellA
+2025-06-02 13:02:34,573 - INFO - Processing album: 2018-12 Fotonica lectures
+2025-06-02 13:02:35,266 - INFO - Processing album: 2017-12 Fotonica IED selecta
+2025-06-02 13:02:36,176 - INFO - Processing album: 2017-12 Fotonica 1 dic
+2025-06-02 13:02:36,899 - INFO - Processing album: 2017-12 Fotonica Selecta
+2025-06-02 13:02:37,703 - INFO - Processing album: 2017-12 Fotonica Selecta rename
+2025-06-02 13:02:38,471 - INFO - Processing album: 2017-12 Fotonica dj-vj
+2025-06-02 13:02:39,249 - INFO - Processing album: 2017-12 Fotonica exhibit
+2025-06-02 13:02:40,052 - INFO - Processing album: _Fotonica Selecta
+2025-06-02 13:02:40,791 - INFO - Processing album: 2023-12 Fotonica Drone
+2025-06-02 13:02:41,490 - INFO - Processing album: 2023-12 Fotonica Moritz Videos
+2025-06-02 13:02:42,657 - INFO - Processing album: 2023-12 FOTONICA Videomapping Drone
+2025-06-02 13:02:43,473 - INFO - Processing album: 2023-12 Fotonica Drone VIDEOS
+2025-06-02 13:02:44,173 - INFO - Processing album: 2023-12 Fotonica
+2025-06-02 13:02:44,941 - INFO - Processing album: 2023-12 Fotonica Accademia Video
+2025-06-02 13:02:45,671 - INFO - Processing album: 2023-12 Fotonica Day 1 Videos
+2025-06-02 13:02:46,447 - INFO - Processing album: 2023-12 Fotonica Workshop Naba
+2025-06-02 13:02:47,150 - INFO - Processing album: 2023-12 Fotonica Workshop Naba Vertical
+2025-06-02 13:02:47,792 - INFO - Processing album: 2023-12 Fotonica Spring Attitude Festival
+2025-06-02 13:02:48,651 - INFO - Processing album: 2023-12 Fotonica Spring Attitude Festival Videos
+2025-06-02 13:02:49,296 - INFO - Processing album: _Fotonica Video Officials VIDEO
+2025-06-02 13:02:49,998 - INFO - Processing album: 2022-12 LCF _Selecta Rob
+2025-06-02 13:02:50,730 - INFO - Processing album: 2022-12 LCF DAY 4 _Selecta
+2025-06-02 13:02:51,603 - INFO - Processing album: 2022-12 LCF DAY 4 Eliza
+2025-06-02 13:02:52,448 - INFO - Processing album: 2022-12 LCF _Selecta liz
+2025-06-02 13:02:53,255 - INFO - Processing album: 2022-12 LCF DAY 4 Eliza Artists Paraadiso
+2025-06-02 13:02:54,099 - INFO - Processing album: 2022-12 LCF _Selecta Liz 2
+2025-06-02 13:02:54,733 - INFO - Processing album: 2022-12 LCF DAY 4 Eliza Artists MONOCOLOR
+2025-06-02 13:02:55,469 - INFO - Processing album: 2022-12 LCF DAY 4 Eliza Artists Rosario Grieco
+2025-06-02 13:02:56,136 - INFO - Processing album: 2022-12 LCF DAY 3 _Selecta
+2025-06-02 13:02:57,253 - INFO - Processing album: 2022-12 LCF DAY 3 Eliza
+2025-06-02 13:02:58,291 - INFO - Processing album: 2022-12 LCF DAY 3 Eliza Artists KONX-OM-PAX
+2025-06-02 13:02:58,952 - INFO - Processing album: 2022-12 LCF DAY 3 Eliza Artists CAPIBARA+ VIDEOSOLID
+2025-06-02 13:03:00,320 - INFO - Processing album: 2022-12 LCF DAY 3 Eliza Artists DI CIACCIO+SERAPIGLIA
+2025-06-02 13:03:01,253 - INFO - Processing album: 2022-12 LCF DAY 2 Eliza DAY 2
+2025-06-02 13:03:02,250 - INFO - Processing album: 2022-12 LCF DAY 2 _Selecta
+2025-06-02 13:03:03,007 - INFO - Processing album: 2022-12 LCF SELEZIONI MADE IN ITALY Gianluca
+2025-06-02 13:03:03,765 - INFO - Processing album: 2022-12 LCF DAY 2 Eliza DAY 2 Artists Myriam Bleau
+2025-06-02 13:03:04,536 - INFO - Processing album: 2022-12 LCF DAY 2 Eliza DAY 2 Artists Nuno Mika
+2025-06-02 13:03:05,824 - INFO - Processing album: 2022-12 LCF SELEZIONI MADE IN ITALY CLA
+2025-06-02 13:03:07,357 - INFO - Processing album: 2022-12 LCF DAY 2 Eliza DAY 2 Artists NAH60
+2025-06-02 13:03:54,107 - INFO - Processing album: 2022-12 LCF DAY 1 _Selecta
+2025-06-02 13:03:54,858 - INFO - Processing album: 2022-12 LCF DAY 1 Eliza DAY1
+2025-06-02 13:03:55,741 - INFO - Processing album: 2022-12 LCF DAY 1 Eliza DAY 1 Artists Bragaglia + Ticino
+2025-06-02 13:03:56,621 - INFO - Processing album: 2022-12 LCF DAY 1 Eliza DAY 1 Artists XYZ+ MAKRO VJ+SIBLICITY
+2025-06-02 13:03:58,188 - INFO - Processing album: 2022-12 LCF DAY 1 Eliza DAY 1 Artists MACK feat. LOTOTEK
+2025-06-02 13:03:58,851 - INFO - Processing album: 2022-12 LCF DAY 1 Eliza DAY 1 Artists Lecture
+2025-06-02 13:03:59,519 - INFO - Processing album: 2022-12 LCF Auditorium
+2025-06-02 13:04:00,393 - INFO - Processing album: 2022-11 Fotonica DAY 4 Eliza
+2025-06-02 13:04:01,084 - INFO - Processing album: 2022-11 Fotonica DAY4 Rob
+2025-06-02 13:04:01,994 - INFO - Processing album: 2022-11 Fotonica SelectaDay4
+2025-06-02 13:04:02,703 - INFO - Processing album: 2022-11 Fotonica Gianluca
+2025-06-02 13:04:04,399 - INFO - Processing album: 2022-11 Fotonica DAY 4 Eliza Workshop kids
+2025-06-02 13:04:05,049 - INFO - Processing album: 2022-11 Fotonica DAY 3 Rob
+2025-06-02 13:04:05,920 - INFO - Processing album: 2022-11 Fotonica SelectionDay3
+2025-06-02 13:04:06,631 - INFO - Processing album: 2022-11 Fotonica DAY 3 Eliza
+2025-06-02 13:04:07,511 - INFO - Processing album: 2022-11 Fotonica WORKSHOP Video VIDEO
+2025-06-02 13:04:08,141 - INFO - Processing album: 2022-11 Fotonica DAY 2 Eliza
+2025-06-02 13:04:08,918 - INFO - Processing album: 2022-11 Fotonica RADIO CARGO
+2025-06-02 13:04:09,597 - INFO - Processing album: 2022-11 Fotonica DAY 2 SelectionDay2
+2025-06-02 13:04:10,358 - INFO - Processing album: 2022-11 Fotonica DAY 2 Rob
+2025-06-02 13:04:11,066 - INFO - Processing album: 2022-11 Fotonica LORENZO MECOCCI
+2025-06-02 13:04:11,824 - INFO - Processing album: 2022-11 Fotonica TZU
+2025-06-02 13:04:12,512 - INFO - Processing album: 2022-11 Fotonica ARI DYKIER
+2025-06-02 13:04:13,206 - INFO - Processing album: 2022-11 Fotonica INFRATONAL
+2025-06-02 13:04:13,936 - INFO - Processing album: 2022-11 Fotonica DAY 2 Eliza Workshop kids
+2025-06-02 13:04:14,704 - INFO - Processing album: 2022-11 Fotonica FORNIKOOLAS
+2025-06-02 13:04:15,553 - INFO - Processing album: 2022-11 Fotonica DAY 1
+2025-06-02 13:04:16,369 - INFO - Processing album: 2022-11 Fotonica ACHIEH AMEN
+2025-06-02 13:04:50,894 - INFO - Processing album: 2022-11 Fotonica GROMOV
+2025-06-02 13:04:51,580 - INFO - Processing album: 2022-11 Fotonica KRASIS
+2025-06-02 13:04:52,248 - INFO - Processing album: 2022-12 LCF Gianluca Videos
+2025-06-02 13:04:53,100 - INFO - Processing album: 2022-12 LCF SELEZIONI MADE IN ITALY Gianluca Videos
+2025-06-02 13:04:53,798 - INFO - Processing album: 2022-12 LCF SELEZIONI MADE IN ITALY CLA Videos
+2025-06-02 13:04:54,506 - INFO - Processing album: 2022-12 LCF SELEZIONI MADE IN ITALY Videos
+2025-06-02 13:04:55,272 - INFO - Processing album: 2021-11 Fotonica DAY 4 Elizaveta
