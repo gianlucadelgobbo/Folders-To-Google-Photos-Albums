@@ -69,13 +69,6 @@ STATE_FILE = 'upload_state.json'
 FAILED_FILE = 'failed_uploads.json'
 FOLDER_CACHE_FILE = 'folder_cache.json'  # New cache file for folders
 
-# Cache for albums and folders
-album_cache = {}
-folder_cache = load_json(FOLDER_CACHE_FILE, {
-    "processed_folders": [],
-    "last_processed_time": None,
-    "folder_delay": 300  # 5 minutes delay between folders
-})
 
 def save_folder_cache():
     save_json(FOLDER_CACHE_FILE, folder_cache)
@@ -172,6 +165,14 @@ failures = load_json(FAILED_FILE, {
     "ExifErrors": {},
     "UnsupportedFormat": {}
 })
+# Cache for albums and folders
+album_cache = {}
+folder_cache = load_json(FOLDER_CACHE_FILE, {
+    "processed_folders": [],
+    "last_processed_time": None,
+    "folder_delay": 300  # 5 minutes delay between folders
+})
+
 # === AUTH ===
 def authenticate():
     try:
