@@ -314,15 +314,15 @@ async def upload_file(file_path):
         with open(file_path, 'rb') as f:
             log_warn(f"[UPLOAD] Sending file to Google Photos API...")
             try:
-                # Calculate timeout based on file size (1 minute per GB + 5 minutes base)
+                # Calcola timeout in base alla dimensione del file (1 minuto per GB + 5 minuti base)
                 timeout = (file_size / (1024 * 1024 * 1024)) * 60 + 300
                 log_debug("Calculated timeout:", {
                     "seconds": timeout,
                     "minutes": timeout / 60,
                     "based_on_size": format_size(file_size)
                 })
-                
-                # Create a progress bar
+
+                # Crea una progress bar
                 pbar = tqdm(
                     total=file_size,
                     unit='B',
@@ -330,23 +330,29 @@ async def upload_file(file_path):
                     desc=f"Uploading {file_name}",
                     ncols=100
                 )
-                
-                # Create a wrapper for the file that updates the progress bar
-                def read_with_progress():
-                    while True:
-                        chunk = f.read(8192)  # Read in 8KB chunks
-                        if not chunk:
-                            break
-                        pbar.update(len(chunk))
-                        yield chunk
-                    pbar.close()
-                
+
+                # Leggi il file a blocchi, aggiorna la barra e accumula i dati
+                # (per file grandi, meglio inviare direttamente il file object)
+                class FileWithProgress:
+                    def __init__(self, file, pbar):
+                        self.file = file
+                        self.pbar = pbar
+                    def read(self, size=8192):
+                        chunk = self.file.read(size)
+                        if chunk:
+                            self.pbar.update(len(chunk))
+                        return chunk
+                    def __getattr__(self, attr):
+                        return getattr(self.file, attr)
+
+                file_with_progress = FileWithProgress(f, pbar)
                 response = session.post(
                     "https://photoslibrary.googleapis.com/v1/uploads",
-                    data=read_with_progress(),
+                    data=file_with_progress,
                     headers=headers,
                     timeout=timeout
                 )
+                pbar.close()
                 
                 # Log detailed response information
                 log_debug("Upload response status:", response.status_code)
