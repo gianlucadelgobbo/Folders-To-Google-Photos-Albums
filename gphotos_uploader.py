@@ -303,7 +303,7 @@ async def upload_file(file_path):
 
     headers = {
         'Content-Type': 'application/octet-stream',
-        'X-Goog-Upload-File-Name': file_name,
+        'X-Goog-Upload-File-Name': urllib.parse.quote(file_name),
         'X-Goog-Upload-Protocol': 'raw',
     }
     
