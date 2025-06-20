@@ -46,6 +46,12 @@ python3 gphotos_uploader.py --path "/path/to/folders" --update-exif-from-folder-
 
 # Simulate actions without making changes
 python3 gphotos_uploader.py --path "/path/to/folders" --dry-run
+
+# Retry failed uploads
+python3 gphotos_uploader.py --path "/path/to/folders" --retry-failed
+
+# Monitor for new files
+python3 gphotos_uploader.py --path "/path/to/folders" --listener
 ```
 
 ### Folder Structure
@@ -64,26 +70,6 @@ This will:
 - Create an album for each subfolder with subfolder naming
 - Upload all files not yet uploaded
 - Track progress in `upload_state.json`
-
-### Retry Failed Uploads Only
-
-```bash
-python3 gphotos_uploader.py --path "/absolute/path/to/photos-folders" --retry-failed
-```
-
-This will:
-
-- Load `failed_uploads.json`
-- Attempt to re-upload failed files
-- Remove successfully reprocessed files from the failure list
-
-### Listener Mode
-
-```bash
-python3 gphotos_uploader.py --path "/path/to/folders" --listener
-```
-
-Continuously monitors the `ExifErrors` category in `failed_uploads.json` and attempts to process new files as they appear.
 
 ## State Management
 
@@ -107,11 +93,21 @@ Continuously monitors the `ExifErrors` category in `failed_uploads.json` and att
 - `upload.log`: detailed log of all actions and errors
 - `credentials.json`: your OAuth2 credentials (ignored via `.gitignore`)
 
+## Utilities
+
+See the [utilities README](utilities/README.md) for additional tools and functions:
+- EXIF management
+- File timestamp synchronization
+- Album cache management
+- Date extraction from folder names
+
 ## Notes
 
 - Max file size is 10GB due to Google Photos API limitations
 - Albums are created using folder names (truncated to 100 characters if needed)
 - You must manually approve the OAuth2 access in the browser on the first run
+- The script uses async/await for better performance
+- Rate limiting is handled automatically with exponential backoff
 
 ## License
 

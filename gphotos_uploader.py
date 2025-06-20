@@ -19,6 +19,7 @@ from datetime import datetime
 import gc
 from typing import Tuple, Optional
 import urllib.parse
+import asyncio
 
 # Suppress urllib3 SSL warnings
 warnings.filterwarnings('ignore', category=Warning)
@@ -29,7 +30,7 @@ def log_init(msg):
 
 log_init("[INIT] Script starting...")
 
-SUPPORTED_EXIF_EXT = ('.jpg', '.jpeg', '.heic', '.heif', '.cr2', '.tif', '.tiff', '.mov', '.mp4', '.nef')
+SUPPORTED_EXIF_EXT = ('.jpg', '.jpeg', '.heic', '.heif', '.cr2', '.tif', '.tiff', '.mov', '.mp4', '.nef', '.flv','.avi','.m4v','.mgg','.swf')
 
 # === CLI ===
 log_init("[INIT] Setting up argument parser...")
@@ -39,11 +40,12 @@ parser.add_argument("--retry-failed", action="store_true", help="Retry files lis
 parser.add_argument("--listener", action="store_true", help="Continuously watch 'ExifErrors' and upload as they appear")
 parser.add_argument("--update-exif-from-folder-if-mismatch", action="store_true", help="Fix EXIF date using folder name")
 parser.add_argument("--dry-run", action="store_true", help="Simulate all actions without uploading or modifying anything")
+parser.add_argument("--debug", action="store_true", help="Enable detailed debug logging of API responses")
 
 log_init("[INIT] Parsing arguments...")
 try:
     args = parser.parse_args()
-    log_init(f"[INIT] Arguments parsed: path={args.path}, retry_failed={args.retry_failed}, listener={args.listener}, update_exif={args.update_exif_from_folder_if_mismatch}, dry_run={args.dry_run}")
+    log_init(f"[INIT] Arguments parsed: path={args.path}, retry_failed={args.retry_failed}, listener={args.listener}, update_exif={args.update_exif_from_folder_if_mismatch}, dry_run={args.dry_run}, debug={args.debug}")
 except Exception as e:
     print(f"Error parsing arguments: {e}", file=sys.stderr)
     sys.exit(1)
@@ -53,6 +55,7 @@ RETRY_FAILED = args.retry_failed
 LISTENER_MODE = args.listener
 UPDATE_FROM_FOLDER_DATE = args.update_exif_from_folder_if_mismatch
 DRY_RUN = args.dry_run
+DEBUG_MODE = args.debug
 
 # === CONFIG ===
 log_init("[INIT] Loading configuration...")
@@ -64,9 +67,46 @@ CREDENTIALS_FILE = 'credentials.json'
 LOG_FILE = 'upload.log'
 STATE_FILE = 'upload_state.json'
 FAILED_FILE = 'failed_uploads.json'
+FOLDER_CACHE_FILE = 'folder_cache.json'  # New cache file for folders
 
-# Cache for albums
+# Cache for albums and folders
 album_cache = {}
+folder_cache = load_json(FOLDER_CACHE_FILE, {
+    "processed_folders": [],
+    "last_processed_time": None,
+    "folder_delay": 300  # 5 minutes delay between folders
+})
+
+def save_folder_cache():
+    save_json(FOLDER_CACHE_FILE, folder_cache)
+
+def can_process_folder(folder_path):
+    """Check if we can process a folder based on rate limits and cache"""
+    folder_str = str(folder_path)
+    
+    # If folder was already processed, skip it
+    if folder_str in folder_cache["processed_folders"]:
+        log_warn(f"[CACHE] Folder already processed: {folder_path}")
+        return False
+        
+    # Check if we need to wait
+    if folder_cache["last_processed_time"]:
+        last_time = datetime.fromisoformat(folder_cache["last_processed_time"])
+        time_since_last = (datetime.now() - last_time).total_seconds()
+        
+        if time_since_last < folder_cache["folder_delay"]:
+            wait_time = folder_cache["folder_delay"] - time_since_last
+            log_warn(f"[CACHE] Need to wait {wait_time:.0f} seconds before processing next folder")
+            return False
+            
+    return True
+
+def mark_folder_processed(folder_path):
+    """Mark a folder as processed and update the cache"""
+    folder_str = str(folder_path)
+    folder_cache["processed_folders"].append(folder_str)
+    folder_cache["last_processed_time"] = datetime.now().isoformat()
+    save_folder_cache()
 
 # === LOGGING ===
 log_init("[INIT] Setting up logging...")
@@ -84,6 +124,16 @@ def log_error(msg, exc_info=False):
     else:
         logging.error(msg)
     sys.stderr.flush()
+
+def log_debug(msg, data=None):
+    if DEBUG_MODE:
+        if data:
+            print(f"[DEBUG] {msg}\n{json.dumps(data, indent=2)}", flush=True)
+            logging.debug(f"{msg}\n{json.dumps(data, indent=2)}")
+        else:
+            print(f"[DEBUG] {msg}", flush=True)
+            logging.debug(msg)
+        sys.stdout.flush()
 
 log_init("[INIT] Checking root directory...")
 if not os.path.isdir(PHOTO_ROOT_DIR):
@@ -222,46 +272,107 @@ def search_album_by_name(title):
         return None
 
 @retry(wait=wait_fixed(5), stop=stop_after_attempt(5))
-def upload_file(file_path):
+async def upload_file(file_path):
     file_size = os.path.getsize(file_path)
     max_size = 10 * 1024 * 1024 * 1024  # 10 GB
 
     folder_name = Path(file_path).parent.name
     file_name = Path(file_path).name
 
-    log_warn(f"[UPLOAD] Starting upload of {file_name} ({file_size} bytes)")
+    # Convert sizes to human readable format
+    def format_size(size):
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size < 1024:
+                return f"{size:.2f}{unit}"
+            size /= 1024
+        return f"{size:.2f}TB"
+
+    log_warn(f"[UPLOAD] Starting upload of {file_name}")
+    log_warn(f"[UPLOAD] File size: {format_size(file_size)} (max allowed: {format_size(max_size)})")
+    log_debug("Size details:", {
+        "bytes": file_size,
+        "max_bytes": max_size,
+        "percentage_of_max": (file_size / max_size) * 100
+    })
 
     if file_size > max_size:
-        log_warn(f"❌ File troppo grande: {file_name} ({file_size} bytes)")
+        log_warn(f"❌ File troppo grande: {file_name} ({format_size(file_size)})")
         add_failure("TooLarge", folder_name, file_name, Path(file_path).parent)
-        raise Exception(f"File too large: {file_size} > 10GB")
+        raise Exception(f"File too large: {format_size(file_size)} > {format_size(max_size)}")
 
     headers = {
         'Content-Type': 'application/octet-stream',
         'X-Goog-Upload-File-Name': file_name,
         'X-Goog-Upload-Protocol': 'raw',
     }
+    
+    log_debug("Upload headers:", headers)
 
     try:
         log_warn(f"[UPLOAD] Opening file for reading: {file_path}")
         with open(file_path, 'rb') as f:
             log_warn(f"[UPLOAD] Sending file to Google Photos API...")
             try:
+                # Calculate timeout based on file size (1 minute per GB + 5 minutes base)
+                timeout = (file_size / (1024 * 1024 * 1024)) * 60 + 300
+                log_debug("Calculated timeout:", {
+                    "seconds": timeout,
+                    "minutes": timeout / 60,
+                    "based_on_size": format_size(file_size)
+                })
+                
+                # Create a progress bar
+                pbar = tqdm(
+                    total=file_size,
+                    unit='B',
+                    unit_scale=True,
+                    desc=f"Uploading {file_name}",
+                    ncols=100
+                )
+                
+                # Create a wrapper for the file that updates the progress bar
+                def read_with_progress():
+                    while True:
+                        chunk = f.read(8192)  # Read in 8KB chunks
+                        if not chunk:
+                            break
+                        pbar.update(len(chunk))
+                        yield chunk
+                    pbar.close()
+                
                 response = session.post(
                     "https://photoslibrary.googleapis.com/v1/uploads",
-                    data=f,
+                    data=read_with_progress(),
                     headers=headers,
-                    timeout=360
+                    timeout=timeout
                 )
-                log_warn(f"[UPLOAD] Got response from API: {response.status_code}")
+                
+                # Log detailed response information
+                log_debug("Upload response status:", response.status_code)
+                log_debug("Upload response headers:", {k: v for k, v in response.headers.items()})
+                log_debug("Upload response content:", response.text)
                 
                 if response.status_code != 200:
                     error_msg = f"[UPLOAD] Error response from API: {response.status_code} - {response.text}"
                     log_error(error_msg)
+                    log_debug("Upload error details:", {
+                        "status": response.status_code,
+                        "headers": dict(response.headers),
+                        "body": response.text
+                    })
                     raise Exception(error_msg)
-                    
+                
+                # Validate upload token
+                upload_token = response.text.strip()
+                if not upload_token or len(upload_token) < 10:  # Basic validation
+                    error_msg = f"[UPLOAD] Invalid upload token received: {upload_token}"
+                    log_error(error_msg)
+                    raise Exception(error_msg)
+                
                 log_warn(f"[UPLOAD] Successfully uploaded {file_name}")
-                return response.text
+                log_debug("Upload token:", upload_token)
+                return upload_token
+                
             except Exception as e:
                 log_error(f"[UPLOAD] Error during API request: {str(e)}", exc_info=True)
                 raise
@@ -270,8 +381,15 @@ def upload_file(file_path):
         raise
 
 @retry(wait=wait_fixed(5), stop=stop_after_attempt(5))
-def add_to_album(upload_token, album_id, description, folder_name):
+async def add_to_album(upload_token, album_id, description, folder_name):
     log_warn(f"[ALBUM] Adding photo to album {album_id}: {folder_name}")
+    
+    # Validate upload token
+    if not upload_token or len(upload_token) < 10:
+        error_msg = f"[ALBUM] Invalid upload token provided: {upload_token}"
+        log_error(error_msg)
+        raise Exception(error_msg)
+    
     body = {
         'albumId': album_id,
         'newMediaItems': [{
@@ -281,13 +399,26 @@ def add_to_album(upload_token, album_id, description, folder_name):
     }
     try:
         log_warn(f"[ALBUM] Sending request to add photo to album")
+        log_debug("Request body:", body)
         response = session.post("https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate", json=body)
         
-        # Handle rate limiting
+        # Log detailed response information
+        log_debug("Response status:", response.status_code)
+        log_debug("Response headers:", {k: v for k, v in response.headers.items()})
+        log_debug("Response content:", response.text)
+        
+        # Handle rate limiting with exponential backoff
         if response.status_code == 429:
-            log_warn("[ALBUM] Rate limit exceeded, waiting 65 seconds before retry...")
-            time.sleep(65)  # Wait for 65 seconds (slightly more than 1 minute)
-            raise Exception("Rate limit exceeded, retrying after delay")
+            # Get retry delay from response headers or use default
+            retry_after = int(response.headers.get('Retry-After', 120))  # Default to 120 seconds
+            log_warn(f"[ALBUM] Rate limit exceeded, waiting {retry_after} seconds before retry...")
+            log_debug("Rate limit response:", {
+                "status": response.status_code,
+                "headers": dict(response.headers),
+                "body": response.text
+            })
+            time.sleep(retry_after)
+            raise Exception(f"Rate limit exceeded, retrying after {retry_after}s delay")
             
         if response.status_code == 404 and "The provided ID does not match any albums" in response.text:
             # Album no longer exists, remove it from state and create a new one
@@ -309,15 +440,17 @@ def add_to_album(upload_token, album_id, description, folder_name):
             save_json(STATE_FILE, state)
             # Retry with new album ID
             body['albumId'] = new_album_id
+            log_debug("Retrying with new album ID. Request body:", body)
             response = session.post("https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate", json=body)
             
         if response.status_code != 200:
             log_error(f"[ALBUM] Error response from API: {response.status_code} - {response.text}")
+            log_debug("Error response body:", response.json() if response.text else None)
             raise Exception(f"Error adding to album: {response.text}")
             
         # Parse response
         result = response.json()
-        log_warn(f"[ALBUM] API Response: {json.dumps(result, indent=2)}")
+        log_debug("API Response:", result)
         
         if 'newMediaItemResults' not in result:
             log_error(f"[ALBUM] Unexpected API response format: {result}")
@@ -331,7 +464,7 @@ def add_to_album(upload_token, album_id, description, folder_name):
             status = item['status']
             if status.get('code') == 0 or status.get('message') == 'Success':
                 log_warn(f"[ALBUM] Successfully added photo to album: {description}")
-                return True
+                return item.get('mediaItem', {}).get('id')  # Return the photo ID
             else:
                 error_msg = status.get('message', 'Unknown error')
                 log_error(f"[ALBUM] Failed to add media item: {error_msg}")
@@ -346,14 +479,31 @@ def add_to_album(upload_token, album_id, description, folder_name):
         raise
 
 # === FAILURE HANDLING ===
-def add_failure(error_type, folder_name, file_name, folder_path):
+def add_failure(error_type, folder_name, file_name, folder_path, album_id=None, photo_id=None):
+    if error_type not in failures:
+        failures[error_type] = {}
+        
     if folder_name not in failures[error_type]:
         failures[error_type][folder_name] = {
             "path": str(folder_path.resolve()),
             "files": []
         }
-    if file_name not in failures[error_type][folder_name]["files"]:
-        failures[error_type][folder_name]["files"].append(file_name)
+        if album_id:
+            failures[error_type][folder_name]["album_id"] = album_id
+            
+    if error_type == "AddToAlbumError":
+        # For AddToAlbumError, store additional info
+        failures[error_type][folder_name]["files"].append({
+            "name": file_name,
+            "photo_id": photo_id,
+            "retry_count": 0,
+            "last_attempt": datetime.now().isoformat()
+        })
+    else:
+        # For other error types, just store the filename
+        if file_name not in failures[error_type][folder_name]["files"]:
+            failures[error_type][folder_name]["files"].append(file_name)
+            
     save_json(FAILED_FILE, failures)
 
 # === UPDATE_FROM_FOLDER_DATE ===
@@ -446,7 +596,7 @@ def update_filesystem_date_if_mismatch(file: Path, folder_name: str):
             log_warn(f"[FIXED] Filesystem timestamp of {file.name}: {current_ts} → {new_dt}")
 
 # === LISTENER ===
-def process_exif_errors_loop():
+async def process_exif_errors_loop():
     log_warn("🔄 Listening for new files in 'ExifErrors'...")
     already_uploaded = set()
 
@@ -492,8 +642,8 @@ def process_exif_errors_loop():
                     continue
 
                 try:
-                    upload_token = upload_file(str(file_path))
-                    add_to_album(upload_token, album_id, file_name, folder_name)
+                    upload_token = await upload_file(str(file_path))
+                    await add_to_album(upload_token, album_id, file_name, folder_name)
                     state[folder_name]['files'].append(file_name)
                     already_uploaded.add((folder_name, file_name))
                     save_json(STATE_FILE, state)
@@ -507,7 +657,7 @@ def process_exif_errors_loop():
 
         time.sleep(10)
 
-def process_file(file: Path, folder_name: str, album_id: str, folder_path: Path, already_uploaded: bool = False):
+async def process_file(file: Path, folder_name: str, album_id: str, folder_path: Path, already_uploaded: bool = False):
     log_warn(f"Processing file: {file}")
     global total_uploaded, total_failed
 
@@ -554,7 +704,7 @@ def process_file(file: Path, folder_name: str, album_id: str, folder_path: Path,
 
     try:
         log_warn(f"[UPLOAD] Attempting to upload file: {file.name}")
-        upload_token = upload_file(str(file))
+        upload_token = await upload_file(str(file))
         # Save state immediately after successful upload
         state[folder_name]['files'].append(file.name)
         save_json(STATE_FILE, state)
@@ -567,13 +717,14 @@ def process_file(file: Path, folder_name: str, album_id: str, folder_path: Path,
 
     try:
         log_warn(f"[ALBUM] Attempting to add {file.name} to album {folder_name}")
-        add_to_album(upload_token, album_id, file.name, folder_name)
+        # Get the photo ID from the add_to_album response
+        photo_id = await add_to_album(upload_token, album_id, file.name, folder_name)
         logging.info(f"✅ {file.name} → {folder_name}")
         total_uploaded += 1
         return True
     except Exception as e:
         log_error(f"❌ Album error for '{file}': {str(e)}", exc_info=True)
-        add_failure("AddToAlbumError", folder_name, file.name, folder_path)
+        add_failure("AddToAlbumError", folder_name, file.name, folder_path, album_id=album_id)
         total_failed += 1
         return False
 
@@ -644,7 +795,7 @@ def force_file_download(file_path: Path) -> bool:
 total_uploaded = 0
 total_failed = 0
 
-if RETRY_FAILED:
+async def retry_failed():
     log_warn("🔁 Modalità retry: elaborazione file falliti da failed_uploads.json...\n")
     for error_type in ["UploadError", "AddToAlbumError"]:
         log_warn(f"[RETRY] Processing {error_type} failures...")
@@ -687,84 +838,76 @@ if RETRY_FAILED:
                     failures[error_type][folder_name]["files"].remove(file_name)
                     if not failures[error_type][folder_name]["files"]:
                         del failures[error_type][folder_name]
+                    save_json(FAILED_FILE, failures)
                     continue
 
-                if process_file(file, folder_name, album_id, folder_path):
+                try:
+                    upload_token = await upload_file(str(file))
+                    await add_to_album(upload_token, album_id, file.name, folder_name)
                     log_warn(f"✅ Successfully retried file: {file_name}")
                     failures[error_type][folder_name]["files"].remove(file_name)
                     if not failures[error_type][folder_name]["files"]:
                         del failures[error_type][folder_name]
-                else:
+                    save_json(FAILED_FILE, failures)
+                except Exception as e:
+                    log_error(f"Error processing file {file_name}: {str(e)}", exc_info=True)
                     log_warn(f"❌ Failed to retry file: {file_name}")
 
-    save_json(FAILED_FILE, failures)
+    log_warn("Retry process completed. Exiting.")
 
-    if LISTENER_MODE:
-        process_exif_errors_loop()
-
-else:
-    photo_root = Path(PHOTO_ROOT_DIR)
-    log_warn(f"Starting main loop with root: {photo_root}")
-    for folder in tqdm(sorted(photo_root.iterdir())):
-        log_warn(f"[DEBUG] folder: {folder} (type: {type(folder)})")
-        log_warn(f"Checking folder: {folder}")
-
-        if not folder.is_dir():
-            log_warn(f"Skipping non-directory: {folder}")
+async def main():
+    log_warn("🔍 Scanning directory...")
+    total_uploaded = 0
+    total_failed = 0
+    
+    for folder_path in Path(PHOTO_ROOT_DIR).iterdir():
+        if not folder_path.is_dir():
             continue
-
-        folder_name = folder.name
-        folder_path = Path(folder)
-        log_warn(f"Processing folder: {folder_name} at {folder_path}")
-
-        # Check if we need to create a new album
-        if folder_name not in state:
-            log_warn(f"[ALBUM] No existing album found for folder: {folder_name}")
-            if DRY_RUN:
-                log_warn(f"[DRY-RUN] Would create album '{folder_name}'")
+            
+        folder_name = folder_path.name
+        
+        # Check if we can process this folder
+        if not can_process_folder(folder_path):
+            continue
+            
+        log_warn(f"\n📁 Processing folder: {folder_name}")
+        
+        # Get or create album
+        album_id = None
+        if folder_name in state:
+            album_id = state[folder_name].get("album_id")
+            
+        if not album_id:
             try:
-                log_warn(f"[ALBUM] Creating new album for folder: {folder_name}")
                 album_id = create_album(folder_name)
                 state[folder_name] = {
                     'album_id': album_id,
-                    'path': str(folder_path),
+                    'path': str(folder_path.resolve()),
                     'files': []
                 }
                 save_json(STATE_FILE, state)
-                log_warn(f"[ALBUM] Successfully created and saved album state for: {folder_name}")
             except Exception as e:
-                log_error(f"Errore creazione album '{folder_name}': {e}", exc_info=True)
-                continue
-        else:
-            album_id = state[folder_name]['album_id']
-            folder_path = Path(state[folder_name]['path'])
-            log_warn(f"[ALBUM] Using existing album for {folder_name} (id: {album_id})")
-
-        files = set(state[folder_name].get('files', []))
-        # Only process files in the target directory
-        found_files = [f for f in folder_path.iterdir() if f.is_file() and str(f).startswith(str(folder_path))]
-        
-        # Processa un file alla volta
-        for f in found_files:
-            # Skip already processed files in both dry-run and normal mode
-            if f.name in files:
-                if DRY_RUN:
-                    log_warn(f"[DRY-RUN] Would skip already processed file: {f.name}")
+                log_error(f"Error creating album: {e}", exc_info=True)
                 continue
                 
-            # Only log if we're actually going to process the file
-            if f.suffix.lower() in SUPPORTED_EXIF_EXT:
-                if DRY_RUN:
-                    log_warn(f"[DRY-RUN] Would process {f.name} ({f.suffix.lower()})")
-                else:
-                    log_warn(f"Processing {f.name} ({f.suffix.lower()})")
-                process_file(f, folder_name, album_id, folder_path, already_uploaded=False)
-            else:
-                log_warn(f"Skipping unsupported format: {f.name} ({f.suffix.lower()})")
-            
-            # Forza la liberazione delle risorse dopo ogni file
-            del f
-            gc.collect()
+        # Process files in folder
+        for file in folder_path.iterdir():
+            if file.is_file():
+                await process_file(file, folder_name, album_id, folder_path)
+                
+        # Mark folder as processed
+        mark_folder_processed(folder_path)
+        
+    log_warn("\n✅ Elaborazione completata.")
+    log_warn(f"📸 File caricati con successo: {total_uploaded}")
+    log_warn(f"❌ File falliti: {total_failed} (vedi '{FAILED_FILE}')")
+    logging.info(f"✔️ Fine script: successi={total_uploaded}, fallimenti={total_failed}")
+
+if __name__ == "__main__":
+    if RETRY_FAILED:
+        asyncio.run(retry_failed())
+    else:
+        asyncio.run(main())
 
 # === REPORT ===
 log_warn("\n✅ Elaborazione completata.")
