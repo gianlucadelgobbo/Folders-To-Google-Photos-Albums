@@ -10,6 +10,7 @@ A Python script to upload large batches of photos and videos to Google Photos, o
 - Tracks already uploaded files to avoid duplication
 - Skips files larger than 10GB (Google Photos API limitation)
 - Supports a `--retry-failed` mode to reprocess only previously failed uploads
+- Can fix EXIF and filesystem dates using folder names
 
 ## Supported File Types
 
@@ -38,20 +39,20 @@ python3 gphotos_uploader.py --path "/absolute/path/to/photos-folders"
 ### Additional Options
 
 ```bash
-# Create albums without uploading files
-python3 gphotos_uploader.py --path "/path/to/folders" --create-albums-only
-
-# Fix EXIF dates using folder names
-python3 gphotos_uploader.py --path "/path/to/folders" --update-exif-from-folder-if-mismatch
+# Fix EXIF and filesystem dates using folder names
+python3 gphotos_uploader.py --path "/path/to/folders" --fix-dates
 
 # Simulate actions without making changes
 python3 gphotos_uploader.py --path "/path/to/folders" --dry-run
 
+# Enable detailed debug logging
+python3 gphotos_uploader.py --path "/path/to/folders" --debug
+
 # Retry failed uploads
 python3 gphotos_uploader.py --path "/path/to/folders" --retry-failed
 
-# Monitor for new files
-python3 gphotos_uploader.py --path "/path/to/folders" --listener
+# Combine options
+python3 gphotos_uploader.py --path "/path/to/folders" --fix-dates --dry-run --debug
 ```
 
 ### Folder Structure
