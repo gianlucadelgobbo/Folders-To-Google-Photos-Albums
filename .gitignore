@@ -1,6 +1,6 @@
 upload_state.json
 failed_uploads.json
 upload.log
-credentials.json
+credentials*
 .DS_Store
 utilities

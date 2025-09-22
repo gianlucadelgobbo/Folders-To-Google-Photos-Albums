@@ -488,9 +488,12 @@ async def add_existing_media_to_album(media_item_id, album_id, folder_name):
             # Create new album
             new_album_id = create_album(folder_name)
             # Update state with new album ID
+            # Get the folder path from the current state or use a default
+            folder_path = state.get(folder_name, {}).get('path', str(Path(PHOTO_ROOT_DIR) / folder_name))
             state[folder_name] = {
                 'album_id': new_album_id,
-                'path': str(Path(folder_path).parent),
+                #'path': str(Path(folder_path).parent),
+                'path': str(folder_path.resolve()),
                 'files': []
             }
             save_json(STATE_FILE, state)
@@ -662,8 +665,6 @@ def build_datetime_from_folder_info(original_dt: datetime, folder_info: Tuple[Op
 def force_file_download(file_path: Path) -> bool:
     """Forza il download di un file usando exiftool."""
     try:
-        log_warn(f"")
-        log_warn(f"")
         log_warn(f"[DEBUG] Tentativo di forzare il download di {file_path}")
         
         # Verifica che il file esista e sia leggibile
@@ -808,7 +809,7 @@ async def retry_failed():
 
     log_warn("Retry process completed. Exiting.")
 
-async def process_file(file: Path, folder_name: str, album_id: str, folder_path: Path, already_uploaded: bool = False):
+async def process_file(file: Path, folder_name: str, album_id: str, folder_path: Path):
     log_warn(f"Processing file: {file}")
     global total_uploaded, total_failed
 
@@ -881,6 +882,7 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
 
 async def main():
     log_warn("🔍 Scanning directory...")
+    global total_uploaded, total_failed
     total_uploaded = 0
     total_failed = 0
     
@@ -923,9 +925,9 @@ if __name__ == "__main__":
         asyncio.run(retry_failed())
     else:
         asyncio.run(main())
-
 # === REPORT ===
 log_warn("\n✅ Elaborazione completata.")
 log_warn(f"📸 File caricati con successo: {total_uploaded}")
 log_warn(f"❌ File falliti: {total_failed} (vedi '{FAILED_FILE}')")
 logging.info(f"✔️ Fine script: successi={total_uploaded}, fallimenti={total_failed}")
+
