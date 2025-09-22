@@ -9,7 +9,7 @@ import sys
 import warnings
 from tqdm import tqdm
 from pathlib import Path
-from tenacity import retry, wait_fixed, stop_after_attempt
+from tenacity import retry, wait_fixed, stop_after_attempt, wait_exponential
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import AuthorizedSession
 import argparse
@@ -30,7 +30,7 @@ def log_init(msg):
 
 log_init("[INIT] Script starting...")
 
-SUPPORTED_EXIF_EXT = ('.jpg', '.jpeg', '.heic', '.heif', '.cr2', '.tif', '.tiff', '.mov', '.mp4', '.nef', '.flv','.avi','.m4v','.mgg','.swf')
+SUPPORTED_EXIF_EXT = ('.jpg', '.jpeg', '.heic', '.heif', '.cr2', '.tif', '.tiff', '.mov', '.mp4', '.nef', '.flv','.avi','.m4v','.mgg','.swf','.rw2')
 
 # === CLI ===
 log_init("[INIT] Setting up argument parser...")
@@ -232,7 +232,7 @@ def search_album_by_name(title):
         log_error(f"[ALBUM] Failed to search for album: {str(e)}")
         return None
 
-@retry(wait=wait_fixed(5), stop=stop_after_attempt(5))
+@retry(wait=wait_exponential(multiplier=2, min=5, max=300), stop=stop_after_attempt(7))
 async def upload_file(file_path):
     file_size = os.path.getsize(file_path)
     max_size = 10 * 1024 * 1024 * 1024  # 10 GB
@@ -314,12 +314,24 @@ async def upload_file(file_path):
                     timeout=timeout
                 )
                 pbar.close()
-                
+
                 # Log detailed response information
                 log_debug("Upload response status:", response.status_code)
                 log_debug("Upload response headers:", {k: v for k, v in response.headers.items()})
                 log_debug("Upload response content:", response.text)
                 
+                # Handle rate limiting with exponential backoff
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get('Retry-After', 120))
+                    log_warn(f"[UPLOAD] Rate limit exceeded, waiting {retry_after} seconds before retry...")
+                    log_debug("Rate limit response:", {
+                        "status": response.status_code,
+                        "headers": dict(response.headers),
+                        "body": response.text
+                    })
+                    await asyncio.sleep(retry_after)
+                    raise Exception(f"Rate limit exceeded, retrying after {retry_after}s delay")
+
                 if response.status_code != 200:
                     error_msg = f"[UPLOAD] Error response from API: {response.status_code} - {response.text}"
                     log_error(error_msg)
@@ -348,7 +360,7 @@ async def upload_file(file_path):
         log_error(f"[UPLOAD] Failed to upload {file_name}: {str(e)}", exc_info=True)
         raise
 
-@retry(wait=wait_fixed(5), stop=stop_after_attempt(5))
+@retry(wait=wait_exponential(multiplier=2, min=5, max=300), stop=stop_after_attempt(7))
 async def add_to_album(upload_token, album_id, description, folder_name):
     log_warn(f"[ALBUM] Adding photo to album {album_id}: {folder_name}")
     
@@ -445,7 +457,7 @@ async def add_to_album(upload_token, album_id, description, folder_name):
         log_error(f"[ALBUM] Failed to add photo to album: {str(e)}")
         raise
 
-@retry(wait=wait_fixed(5), stop=stop_after_attempt(5))
+@retry(wait=wait_exponential(multiplier=2, min=5, max=300), stop=stop_after_attempt(7))
 async def add_existing_media_to_album(media_item_id, album_id, folder_name):
     """Add an existing media item to an album using its ID (no re-upload needed)"""
     log_warn(f"[ALBUM] Adding existing media item {media_item_id} to album {album_id}: {folder_name}")
