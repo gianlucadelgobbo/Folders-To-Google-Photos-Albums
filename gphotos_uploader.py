@@ -275,11 +275,13 @@ async def upload_file(file_path):
         with open(file_path, 'rb') as f:
             log_warn(f"[UPLOAD] Sending file to Google Photos API...")
             try:
-                # Calcola timeout in base alla dimensione del file (1 minuto per GB + 5 minuti base)
-                timeout = (file_size / (1024 * 1024 * 1024)) * 60 + 300
+                # Calcola timeout in base alla dimensione del file
+                # Connect timeout: 30s, Read timeout: max(20 min, 1 min per GB + 5 min base)
+                read_timeout = max(1200, (file_size / (1024 * 1024 * 1024)) * 60 + 300)
+                connect_timeout = 30
                 log_debug("Calculated timeout:", {
-                    "seconds": timeout,
-                    "minutes": timeout / 60,
+                    "connect_seconds": connect_timeout,
+                    "read_seconds": read_timeout,
                     "based_on_size": format_size(file_size)
                 })
 
@@ -311,7 +313,7 @@ async def upload_file(file_path):
                     "https://photoslibrary.googleapis.com/v1/uploads",
                     data=file_with_progress,
                     headers=headers,
-                    timeout=timeout
+                    timeout=(connect_timeout, read_timeout)
                 )
                 pbar.close()
 
@@ -340,6 +342,11 @@ async def upload_file(file_path):
                         "headers": dict(response.headers),
                         "body": response.text
                     })
+                    try:
+                        raw_bytes = response.content[:500]
+                        log_warn(f"[UPLOAD] Raw response bytes (truncated): {raw_bytes}")
+                    except Exception:
+                        pass
                     raise Exception(error_msg)
                 
                 # Validate upload token
@@ -355,9 +362,11 @@ async def upload_file(file_path):
                 
             except Exception as e:
                 log_error(f"[UPLOAD] Error during API request: {str(e)}", exc_info=True)
+                log_warn(f"[UPLOAD] Raw exception: {repr(e)}")
                 raise
     except Exception as e:
         log_error(f"[UPLOAD] Failed to upload {file_name}: {str(e)}", exc_info=True)
+        log_warn(f"[UPLOAD] Raw exception: {repr(e)}")
         raise
 
 @retry(wait=wait_exponential(multiplier=2, min=5, max=300), stop=stop_after_attempt(7))
@@ -425,6 +434,11 @@ async def add_to_album(upload_token, album_id, description, folder_name):
         if response.status_code != 200:
             log_error(f"[ALBUM] Error response from API: {response.status_code} - {response.text}")
             log_debug("Error response body:", response.json() if response.text else None)
+            try:
+                raw_bytes = response.content[:500]
+                log_warn(f"[ALBUM] Raw response bytes (truncated): {raw_bytes}")
+            except Exception:
+                pass
             raise Exception(f"Error adding to album: {response.text}")
             
         # Parse response
@@ -455,6 +469,7 @@ async def add_to_album(upload_token, album_id, description, folder_name):
         
     except Exception as e:
         log_error(f"[ALBUM] Failed to add photo to album: {str(e)}")
+        log_warn(f"[ALBUM] Raw exception: {repr(e)}")
         raise
 
 @retry(wait=wait_exponential(multiplier=2, min=5, max=300), stop=stop_after_attempt(7))
@@ -518,6 +533,11 @@ async def add_existing_media_to_album(media_item_id, album_id, folder_name):
         if response.status_code != 200:
             log_error(f"[ALBUM] Error response from API: {response.status_code} - {response.text}")
             log_debug("Error response body:", response.json() if response.text else None)
+            try:
+                raw_bytes = response.content[:500]
+                log_warn(f"[ALBUM-EXISTING] Raw response bytes (truncated): {raw_bytes}")
+            except Exception:
+                pass
             raise Exception(f"Error adding existing media to album: {response.text}")
             
         # Parse response
@@ -529,6 +549,7 @@ async def add_existing_media_to_album(media_item_id, album_id, folder_name):
         
     except Exception as e:
         log_error(f"[ALBUM] Failed to add existing media item to album: {str(e)}")
+        log_warn(f"[ALBUM] Raw exception: {repr(e)}")
         raise
 
 # === FAILURE HANDLING ===
