@@ -20,6 +20,7 @@ import gc
 from typing import Tuple, Optional
 import urllib.parse
 import asyncio
+from requests.exceptions import ReadTimeout, ConnectTimeout, Timeout, ConnectionError as RequestsConnectionError
 
 # Suppress urllib3 SSL warnings
 warnings.filterwarnings('ignore', category=Warning)
@@ -363,6 +364,11 @@ async def upload_file(file_path):
             except Exception as e:
                 log_error(f"[UPLOAD] Error during API request: {str(e)}", exc_info=True)
                 log_warn(f"[UPLOAD] Raw exception: {repr(e)}")
+                # Targeted cooldown on timeouts/connection errors (likely quota/network stalls)
+                if isinstance(e, (ReadTimeout, ConnectTimeout, Timeout, RequestsConnectionError)):
+                    cooldown = 180
+                    log_warn(f"[UPLOAD] Timeout/Connection error detected. Cooling down for {cooldown}s before retry...")
+                    await asyncio.sleep(cooldown)
                 raise
     except Exception as e:
         log_error(f"[UPLOAD] Failed to upload {file_name}: {str(e)}", exc_info=True)
