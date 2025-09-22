@@ -66,6 +66,8 @@ CREDENTIALS_FILE = 'credentials.json'
 LOG_FILE = 'upload.log'
 STATE_FILE = 'upload_state.json'
 FAILED_FILE = 'failed_uploads.json'
+CHUNK_SIZE_BYTES = 32768  # 32KB read size to keep socket active
+TIMEOUT_COUNTS = {}  # per-file timeout counters for adaptive cooldown
 
 # === LOGGING ===
 log_init("[INIT] Setting up logging...")
@@ -301,7 +303,7 @@ async def upload_file(file_path):
                     def __init__(self, file, pbar):
                         self.file = file
                         self.pbar = pbar
-                    def read(self, size=8192):
+                    def read(self, size=CHUNK_SIZE_BYTES):
                         chunk = self.file.read(size)
                         if chunk:
                             self.pbar.update(len(chunk))
@@ -358,6 +360,7 @@ async def upload_file(file_path):
                     raise Exception(error_msg)
                 
                 log_warn(f"[UPLOAD] Successfully uploaded {file_name}")
+                TIMEOUT_COUNTS.pop(str(file_path), None)  # reset on success
                 log_debug("Upload token:", upload_token)
                 return upload_token
                 
@@ -366,8 +369,11 @@ async def upload_file(file_path):
                 log_warn(f"[UPLOAD] Raw exception: {repr(e)}")
                 # Targeted cooldown on timeouts/connection errors (likely quota/network stalls)
                 if isinstance(e, (ReadTimeout, ConnectTimeout, Timeout, RequestsConnectionError)):
-                    cooldown = 180
-                    log_warn(f"[UPLOAD] Timeout/Connection error detected. Cooling down for {cooldown}s before retry...")
+                    key = str(file_path)
+                    TIMEOUT_COUNTS[key] = TIMEOUT_COUNTS.get(key, 0) + 1
+                    steps = [180, 300, 600, 1200]
+                    cooldown = steps[min(TIMEOUT_COUNTS[key]-1, len(steps)-1)]
+                    log_warn(f"[UPLOAD] Timeout/Connection error detected (count={TIMEOUT_COUNTS[key]}). Cooling down for {cooldown}s before retry...")
                     await asyncio.sleep(cooldown)
                 raise
     except Exception as e:
