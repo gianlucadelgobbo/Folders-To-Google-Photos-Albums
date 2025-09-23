@@ -647,9 +647,11 @@ def add_failure(error_type, folder_name, file_name, folder_path, album_id=None, 
             "last_attempt": datetime.now().isoformat()
         })
     else:
-        # For other error types, just store the filename
+        # For other error types, store the filename and album id if available
         if file_name not in failures[error_type][folder_name]["files"]:
             failures[error_type][folder_name]["files"].append(file_name)
+        if album_id:
+            failures[error_type][folder_name]["album_id"] = album_id
             
     save_json(FAILED_FILE, failures)
 
@@ -827,7 +829,8 @@ async def retry_failed():
                     break
             if not album_id:
                 try:
-                    album_id = create_album(folder_name)
+                    # Avoid duplicates: search existing album by title before creating
+                    album_id = search_album_by_name(folder_name) or create_album(folder_name)
                     state[folder_name] = {
                         'album_id': album_id,
                         'path': str(folder_path.resolve()),
@@ -1005,7 +1008,8 @@ async def main():
             
         if not album_id:
             try:
-                album_id = create_album(folder_name)
+                # Avoid duplicates: search existing album by title before creating
+                album_id = search_album_by_name(folder_name) or create_album(folder_name)
                 state[folder_name] = {
                     'album_id': album_id,
                     'path': str(folder_path.resolve()),
