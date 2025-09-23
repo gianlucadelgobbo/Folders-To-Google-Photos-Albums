@@ -21,6 +21,7 @@ from typing import Tuple, Optional
 import urllib.parse
 import asyncio
 from requests.exceptions import ReadTimeout, ConnectTimeout, Timeout, ConnectionError as RequestsConnectionError
+import shutil
 
 # Suppress urllib3 SSL warnings
 warnings.filterwarnings('ignore', category=Warning)
@@ -68,6 +69,7 @@ STATE_FILE = 'upload_state.json'
 FAILED_FILE = 'failed_uploads.json'
 CHUNK_SIZE_BYTES = 32768  # 32KB read size to keep socket active
 TIMEOUT_COUNTS = {}  # per-file timeout counters for adaptive cooldown
+SAFETY_BUFFER_BYTES = 500 * 1024 * 1024  # 500 MB safety buffer
 
 # === LOGGING ===
 log_init("[INIT] Setting up logging...")
@@ -252,6 +254,16 @@ async def upload_file(file_path):
         return f"{size:.2f}TB"
 
     log_warn(f"[UPLOAD] Starting upload of {file_name}")
+    # Disk space check: require file size + 500MB free
+    try:
+        usage = shutil.disk_usage(str(Path(file_path).parent))
+        free_space = usage.free
+        required = file_size + SAFETY_BUFFER_BYTES
+        if free_space < required:
+            log_error(f"❌ Insufficient disk space. Required: {required} bytes, Free: {free_space} bytes. Need at least 500MB over file size.")
+            sys.exit(1)
+    except Exception as e:
+        log_warn(f"[DISK] Could not check free space: {e}")
     log_warn(f"[UPLOAD] File size: {format_size(file_size)} (max allowed: {format_size(max_size)})")
     log_debug("Size details:", {
         "bytes": file_size,
@@ -327,15 +339,31 @@ async def upload_file(file_path):
                 
                 # Handle rate limiting with exponential backoff
                 if response.status_code == 429:
-                    retry_after = int(response.headers.get('Retry-After', 120))
-                    log_warn(f"[UPLOAD] Rate limit exceeded, waiting {retry_after} seconds before retry...")
+                    # Default to Retry-After header if present, else check body for RESOURCE_EXHAUSTED
+                    retry_after = response.headers.get('Retry-After')
+                    if retry_after is not None:
+                        retry_after = int(retry_after)
+                    else:
+                        # If RESOURCE_EXHAUSTED, pause for 4 hours as requested
+                        try:
+                            err = response.json().get('error', {})
+                            status = err.get('status')
+                            message = err.get('message', '')
+                        except Exception:
+                            status = None
+                            message = response.text or ''
+                        if status == 'RESOURCE_EXHAUSTED' or 'Quota exceeded' in message:
+                            retry_after = 4 * 60 * 60  # 4 hours
+                        else:
+                            retry_after = 120  # fallback
+                    log_warn(f"[UPLOAD] Rate limit/RESOURCE_EXHAUSTED. Pausing {retry_after} seconds before retry...")
                     log_debug("Rate limit response:", {
                         "status": response.status_code,
                         "headers": dict(response.headers),
                         "body": response.text
                     })
                     await asyncio.sleep(retry_after)
-                    raise Exception(f"Rate limit exceeded, retrying after {retry_after}s delay")
+                    raise Exception(f"Rate limit/RESOURCE_EXHAUSTED, retrying after {retry_after}s delay")
 
                 if response.status_code != 200:
                     error_msg = f"[UPLOAD] Error response from API: {response.status_code} - {response.text}"
@@ -361,6 +389,8 @@ async def upload_file(file_path):
                 
                 log_warn(f"[UPLOAD] Successfully uploaded {file_name}")
                 TIMEOUT_COUNTS.pop(str(file_path), None)  # reset on success
+                # Add delay after successful upload to avoid quota issues
+                await asyncio.sleep(30)  # 30 second delay between uploads
                 log_debug("Upload token:", upload_token)
                 return upload_token
                 
@@ -410,15 +440,29 @@ async def add_to_album(upload_token, album_id, description, folder_name):
         
         # Handle rate limiting with exponential backoff
         if response.status_code == 429:
-            retry_after = int(response.headers.get('Retry-After', 120))  # Default to 120 seconds
-            log_warn(f"[ALBUM] Rate limit exceeded, waiting {retry_after} seconds before retry...")
+            retry_after = response.headers.get('Retry-After')
+            if retry_after is not None:
+                retry_after = int(retry_after)
+            else:
+                try:
+                    err = response.json().get('error', {})
+                    status = err.get('status')
+                    message = err.get('message', '')
+                except Exception:
+                    status = None
+                    message = response.text or ''
+                if status == 'RESOURCE_EXHAUSTED' or 'Quota exceeded' in message:
+                    retry_after = 4 * 60 * 60  # 4 hours
+                else:
+                    retry_after = 120
+            log_warn(f"[ALBUM] Rate limit/RESOURCE_EXHAUSTED. Pausing {retry_after} seconds before retry...")
             log_debug("Rate limit response:", {
                 "status": response.status_code,
                 "headers": dict(response.headers),
                 "body": response.text
             })
             await asyncio.sleep(retry_after)
-            raise Exception(f"Rate limit exceeded, retrying after {retry_after}s delay")
+            raise Exception(f"Rate limit/RESOURCE_EXHAUSTED, retrying after {retry_after}s delay")
             
         if response.status_code == 404 and "The provided ID does not match any albums" in response.text:
             # Album no longer exists, remove it from state and create a new one
@@ -430,11 +474,14 @@ async def add_to_album(upload_token, album_id, description, folder_name):
                 save_json(STATE_FILE, state)
             
             # Create new album
-            new_album_id = create_album(folder_name)
+            # First try to reuse an existing album with the same title to avoid duplicates
+            new_album_id = search_album_by_name(folder_name) or create_album(folder_name)
             # Update state with new album ID
+            # Resolve a stable folder path from existing state or fallback to root/folder_name
+            resolved_path = state.get(folder_name, {}).get('path', str(Path(PHOTO_ROOT_DIR) / folder_name))
             state[folder_name] = {
                 'album_id': new_album_id,
-                'path': str(Path(description).parent),
+                'path': resolved_path,
                 'files': []
             }
             save_json(STATE_FILE, state)
@@ -506,15 +553,29 @@ async def add_existing_media_to_album(media_item_id, album_id, folder_name):
         
         # Handle rate limiting with exponential backoff
         if response.status_code == 429:
-            retry_after = int(response.headers.get('Retry-After', 120))  # Default to 120 seconds
-            log_warn(f"[ALBUM] Rate limit exceeded, waiting {retry_after} seconds before retry...")
+            retry_after = response.headers.get('Retry-After')
+            if retry_after is not None:
+                retry_after = int(retry_after)
+            else:
+                try:
+                    err = response.json().get('error', {})
+                    status = err.get('status')
+                    message = err.get('message', '')
+                except Exception:
+                    status = None
+                    message = response.text or ''
+                if status == 'RESOURCE_EXHAUSTED' or 'Quota exceeded' in message:
+                    retry_after = 4 * 60 * 60  # 4 hours
+                else:
+                    retry_after = 120
+            log_warn(f"[ALBUM] Rate limit/RESOURCE_EXHAUSTED. Pausing {retry_after} seconds before retry...")
             log_debug("Rate limit response:", {
                 "status": response.status_code,
                 "headers": dict(response.headers),
                 "body": response.text
             })
             await asyncio.sleep(retry_after)
-            raise Exception(f"Rate limit exceeded, retrying after {retry_after}s delay")
+            raise Exception(f"Rate limit/RESOURCE_EXHAUSTED, retrying after {retry_after}s delay")
             
         if response.status_code == 404 and "The provided ID does not match any albums" in response.text:
             # Album no longer exists, remove it from state and create a new one
@@ -526,14 +587,13 @@ async def add_existing_media_to_album(media_item_id, album_id, folder_name):
                 save_json(STATE_FILE, state)
             
             # Create new album
-            new_album_id = create_album(folder_name)
+            new_album_id = search_album_by_name(folder_name) or create_album(folder_name)
             # Update state with new album ID
-            # Get the folder path from the current state or use a default
-            folder_path = state.get(folder_name, {}).get('path', str(Path(PHOTO_ROOT_DIR) / folder_name))
+            # Resolve a stable folder path from existing state or fallback to root/folder_name
+            resolved_path = state.get(folder_name, {}).get('path', str(Path(PHOTO_ROOT_DIR) / folder_name))
             state[folder_name] = {
                 'album_id': new_album_id,
-                #'path': str(Path(folder_path).parent),
-                'path': str(folder_path.resolve()),
+                'path': resolved_path,
                 'files': []
             }
             save_json(STATE_FILE, state)
