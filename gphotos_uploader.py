@@ -841,19 +841,22 @@ async def retry_failed():
                     log_error(f"Errore creazione album retry: {e}", exc_info=True)
                     continue
 
-            for file_name in file_list[:]:
-                file = folder_path / file_name
+            for item in file_list[:]:
+                # item can be a filename (str) or a dict (for AddToAlbumError)
+                file_name = item.get("name") if isinstance(item, dict) else item
                 log_warn(f"[RETRY] Processing file: {file_name}")
-                log_warn(f"[DEBUG] File extension: {file.suffix} (lowercase: {file.suffix.lower()})")
                 
                 # Handle AddToAlbumError differently - skip upload, use stored token/ID
                 if error_type == "AddToAlbumError":
                     # Find the file entry in the failures list
-                    file_entry = None
-                    for entry in failures[error_type][folder_name]["files"]:
-                        if entry.get("name") == file_name:
-                            file_entry = entry
-                            break
+                    if isinstance(item, dict):
+                        file_entry = item
+                    else:
+                        file_entry = None
+                        for entry in failures[error_type][folder_name]["files"]:
+                            if isinstance(entry, dict) and entry.get("name") == file_name:
+                                file_entry = entry
+                                break
                     
                     if file_entry:
                         photo_id = file_entry.get("photo_id")
@@ -877,7 +880,7 @@ async def retry_failed():
                         elif upload_token:
                             # Try to add using upload token (if photo_id is not available)
                             try:
-                                await add_to_album(upload_token, album_id, file.name, folder_name)
+                                await add_to_album(upload_token, album_id, file_name, folder_name)
                                 log_warn(f"✅ Successfully retried file using upload token: {file_name}")
                                 failures[error_type][folder_name]["files"].remove(file_entry)
                                 if not failures[error_type][folder_name]["files"]:
@@ -895,6 +898,9 @@ async def retry_failed():
                         log_warn(f"❌ File entry not found for {file_name}, skipping")
                         continue
                 
+                # Below is only for UploadError branch; now build the path
+                file = folder_path / file_name
+                log_warn(f"[DEBUG] File extension: {file.suffix} (lowercase: {file.suffix.lower()})")
                 # Skip files with unsupported extensions (for UploadError only)
                 if file.suffix.lower() not in SUPPORTED_EXIF_EXT:
                     log_warn(f"❌ Skipping file with unsupported extension: {file_name}")
