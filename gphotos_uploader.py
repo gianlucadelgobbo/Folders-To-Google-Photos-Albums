@@ -166,13 +166,43 @@ except Exception as e:
     exit(1)
 
 # === API WRAPPERS ===
+
+def is_album_id_valid(album_id: str) -> bool:
+    """Validate album ID by checking if it exists and is accessible"""
+    if not album_id:
+        return False
+    try:
+        response = session.get(
+            f"https://photoslibrary.googleapis.com/v1/albums/{album_id}",
+            timeout=(10, 30)
+        )
+        is_valid = response.status_code == 200
+        if not is_valid:
+            log_warn(f"[ALBUM] Album ID validation failed: {album_id} (status {response.status_code})")
+        return is_valid
+    except Exception as e:
+        log_warn(f"[ALBUM] Album ID validation error: {album_id} - {str(e)}")
+        return False
+
 @retry(wait=wait_fixed(5), stop=stop_after_attempt(5))
 def create_album(title):
     log_warn(f"[ALBUM] Creating album: {title}")
+    
+    # SAFETY CHECK: Before creating, do a final search to avoid duplicates
+    # (in case another process created it between our search and now)
+    existing_id = search_album_by_name(title)
+    if existing_id:
+        log_warn(f"[ALBUM] Album '{title}' was already created, using existing (id: {existing_id})")
+        return existing_id
+    
     body = {"album": {"title": title[:100]}}
     try:
         log_warn(f"[ALBUM] Sending request to create album: {title}")
-        response = session.post("https://photoslibrary.googleapis.com/v1/albums", json=body)
+        response = session.post(
+            "https://photoslibrary.googleapis.com/v1/albums",
+            json=body,
+            timeout=(10, 30)
+        )
         if response.status_code != 200:
             log_error(f"[ALBUM] Error creating album: {response.status_code} - {response.text}")
             raise Exception(f"Errore creazione album: {response.text}")
@@ -187,17 +217,24 @@ def create_album(title):
 def search_album_by_name(title):
     global album_cache
     
-    # 1. First check upload_state.json
+    # 1. First check upload_state.json - but VALIDATE the ID
     if title in state:
         album_id = state[title].get('album_id')
-        if album_id:
+        if album_id and is_album_id_valid(album_id):
             log_warn(f"[ALBUM] Found album '{title}' in upload_state.json (id: {album_id})")
             return album_id
+        elif album_id:
+            log_warn(f"[ALBUM] Album id in state is invalid for '{title}': {album_id} (will re-search/create)")
     
     # 2. Then check cache
     if title in album_cache:
-        log_warn(f"[ALBUM] Found album '{title}' in cache (id: {album_cache[title]})")
-        return album_cache[title]
+        album_id = album_cache[title]
+        if is_album_id_valid(album_id):
+            log_warn(f"[ALBUM] Found album '{title}' in cache (id: {album_id})")
+            return album_id
+        else:
+            log_warn(f"[ALBUM] Album id in cache is invalid for '{title}', removing from cache")
+            del album_cache[title]
     
     # 3. If not found, create cache and search
     log_warn(f"[ALBUM] Building album cache...")
@@ -208,7 +245,7 @@ def search_album_by_name(title):
             if page_token:
                 url += f"?pageToken={page_token}"
                 
-            response = session.get(url)
+            response = session.get(url, timeout=(10, 30))
             if response.status_code != 200:
                 log_error(f"[ALBUM] Error searching albums: {response.status_code} - {response.text}")
                 return None
@@ -409,9 +446,7 @@ async def upload_file(file_path):
         log_warn(f"[UPLOAD] Raw exception: {repr(e)}")
         raise
 
-@retry(wait=wait_exponential(multiplier=2, min=5, max=300), stop=stop_after_attempt(7))
-async def add_to_album(upload_token, album_id, description, folder_name):
-    log_warn(f"[ALBUM] Adding photo to album {album_id}: {folder_name}")
+
     
     # Validate upload token
     if not upload_token or len(upload_token) < 10:
@@ -461,6 +496,20 @@ async def add_to_album(upload_token, album_id, description, folder_name):
             })
             await asyncio.sleep(retry_after)
             raise Exception(f"Rate limit/RESOURCE_EXHAUSTED, retrying after {retry_after}s delay")
+        
+        # Handle invalid album ID (400) - album was deleted or is no longer accessible
+        if response.status_code == 400 and "Invalid album ID" in response.text:
+            log_warn(f"[ALBUM] Album {album_id} has invalid ID, recreating for {folder_name}")
+            if folder_name in state:
+                del state[folder_name]
+                save_json(STATE_FILE, state)
+            new_album_id = search_album_by_name(folder_name) or create_album(folder_name)
+            resolved_path = state.get(folder_name, {}).get('path', str(Path(PHOTO_ROOT_DIR) / folder_name))
+            state[folder_name] = {'album_id': new_album_id, 'path': resolved_path, 'files': []}
+            save_json(STATE_FILE, state)
+            body['albumId'] = new_album_id
+            log_debug("Retrying with new album ID")
+            response = session.post("https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate", json=body)
             
         if response.status_code == 404 and "The provided ID does not match any albums" in response.text:
             # Album no longer exists, remove it from state and create a new one
@@ -514,7 +563,8 @@ async def add_to_album(upload_token, album_id, description, folder_name):
             status = item['status']
             if status.get('code') == 0 or status.get('message') == 'Success':
                 log_warn(f"[ALBUM] Successfully added photo to album: {description}")
-                return item.get('mediaItem', {}).get('id')  # Return the photo ID
+                photo_id = item.get('mediaItem', {}).get('id')
+                return photo_id, body['albumId']  # Return both photo_id and the effective album_id used
             else:
                 error_msg = status.get('message', 'Unknown error')
                 log_error(f"[ALBUM] Failed to add media item: {error_msg}")
@@ -529,7 +579,6 @@ async def add_to_album(upload_token, album_id, description, folder_name):
         log_warn(f"[ALBUM] Raw exception: {repr(e)}")
         raise
 
-@retry(wait=wait_exponential(multiplier=2, min=5, max=300), stop=stop_after_attempt(7))
 async def add_existing_media_to_album(media_item_id, album_id, folder_name):
     """Add an existing media item to an album using its ID (no re-upload needed)"""
     log_warn(f"[ALBUM] Adding existing media item {media_item_id} to album {album_id}: {folder_name}")
@@ -574,6 +623,20 @@ async def add_existing_media_to_album(media_item_id, album_id, folder_name):
             })
             await asyncio.sleep(retry_after)
             raise Exception(f"Rate limit/RESOURCE_EXHAUSTED, retrying after {retry_after}s delay")
+        
+        # Handle invalid album ID (400) - album was deleted or is no longer accessible
+        if response.status_code == 400 and "Invalid album ID" in response.text:
+            log_warn(f"[ALBUM] Album {album_id} has invalid ID, recreating for {folder_name}")
+            if folder_name in state:
+                del state[folder_name]
+                save_json(STATE_FILE, state)
+            new_album_id = search_album_by_name(folder_name) or create_album(folder_name)
+            resolved_path = state.get(folder_name, {}).get('path', str(Path(PHOTO_ROOT_DIR) / folder_name))
+            state[folder_name] = {'album_id': new_album_id, 'path': resolved_path, 'files': []}
+            save_json(STATE_FILE, state)
+            body['albumId'] = new_album_id
+            log_debug("Retrying with new album ID")
+            response = session.post("https://photoslibrary.googleapis.com/v1/albums/{albumId}:batchAddMediaItems".format(albumId=new_album_id), json=body)
             
         if response.status_code == 404 and "The provided ID does not match any albums" in response.text:
             # Album no longer exists, remove it from state and create a new one
@@ -615,7 +678,7 @@ async def add_existing_media_to_album(media_item_id, album_id, folder_name):
         log_debug("API Response:", result)
         
         log_warn(f"[ALBUM] Successfully added existing media item to album: {media_item_id}")
-        return True
+        return True, body['albumId']  # Return both success flag and effective album_id
         
     except Exception as e:
         log_error(f"[ALBUM] Failed to add existing media item to album: {str(e)}")
@@ -910,7 +973,8 @@ async def retry_failed():
                         if photo_id:
                             # Try to add existing media item to album
                             try:
-                                await add_existing_media_to_album(photo_id, album_id, folder_name)
+                                success, effective_album_id = await add_existing_media_to_album(photo_id, album_id, folder_name)
+                                state[folder_name]['album_id'] = effective_album_id
                                 log_warn(f"✅ Successfully retried file using existing media ID: {file_name}")
                                 failures[error_type][folder_name]["files"].remove(file_entry)
                                 if not failures[error_type][folder_name]["files"]:
@@ -925,7 +989,8 @@ async def retry_failed():
                         elif upload_token:
                             # Try to add using upload token (if photo_id is not available)
                             try:
-                                await add_to_album(upload_token, album_id, file_name, folder_name)
+                                photo_id, effective_album_id = await add_to_album(upload_token, album_id, file_name, folder_name)
+                                state[folder_name]['album_id'] = effective_album_id
                                 log_warn(f"✅ Successfully retried file using upload token: {file_name}")
                                 failures[error_type][folder_name]["files"].remove(file_entry)
                                 if not failures[error_type][folder_name]["files"]:
@@ -957,7 +1022,8 @@ async def retry_failed():
 
                 try:
                     upload_token = await upload_file(str(file))
-                    await add_to_album(upload_token, album_id, file.name, folder_name)
+                    photo_id, effective_album_id = await add_to_album(upload_token, album_id, file.name, folder_name)
+                    state[folder_name]['album_id'] = effective_album_id
                     log_warn(f"✅ Successfully retried file: {file_name}")
                     failures[error_type][folder_name]["files"].remove(file_name)
                     if not failures[error_type][folder_name]["files"]:
@@ -1040,9 +1106,6 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
     try:
         log_warn(f"[UPLOAD] Attempting to upload file: {file.name}")
         upload_token = await upload_file(str(file))
-        # Save state immediately after successful upload
-        state[folder_name]['files'].append(file.name)
-        save_json(STATE_FILE, state)
         log_warn(f"✅ Uploaded {file.name} to {folder_name}")
     except Exception as e:
         log_error(f"❌ Upload error for '{file}': {str(e)}", exc_info=True)
@@ -1052,8 +1115,13 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
 
     try:
         log_warn(f"[ALBUM] Attempting to add {file.name} to album {folder_name}")
-        # Get the photo ID from the add_to_album response
-        photo_id = await add_to_album(upload_token, album_id, file.name, folder_name)
+        # Get the photo ID and effective album_id from the add_to_album response
+        photo_id, effective_album_id = await add_to_album(upload_token, album_id, file.name, folder_name)
+        # Align state with the effective album_id (in case it was recreated)
+        state[folder_name]['album_id'] = effective_album_id
+        # Save state only AFTER album add succeeds
+        state[folder_name]['files'].append(file.name)
+        save_json(STATE_FILE, state)
         logging.info(f"✅ {file.name} → {folder_name}")
         total_uploaded += 1
         return True
@@ -1107,6 +1175,11 @@ async def main():
                 break
             
             if file.is_file():
+                # IMPORTANT: reload album_id in case it was repaired during a previous file
+                album_id = state.get(folder_name, {}).get("album_id")
+                if not album_id:
+                    log_warn(f"[MAIN] Album ID missing for {folder_name}, skipping file {file.name}")
+                    continue
                 await process_file(file, folder_name, album_id, folder_path)
                 
     log_warn("\n✅ Elaborazione completata.")
