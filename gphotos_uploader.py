@@ -272,11 +272,7 @@ async def upload_file(file_path):
         "percentage_of_max": (file_size / max_size) * 100
     })
 
-    if file_size > max_size:
-        log_warn(f"❌ File troppo grande: {file_name} ({format_size(file_size)})")
-        too_large_files_in_session.add(file_name)  # Mark for skipping in this session
-        add_failure("TooLarge", folder_name, file_name, Path(file_path).parent)
-        raise Exception(f"File too large: {format_size(file_size)} > {format_size(max_size)}")
+    # Remove size check - now done in process_file() before calling upload_file()
 
     headers = {
         'Content-Type': 'application/octet-stream',
@@ -994,6 +990,24 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
     if file_already_processed:
         if DRY_RUN:
             log_warn(f"[DRY-RUN] Skipping already processed file: {file.name}")
+        return
+
+    # CHECK FILE SIZE BEFORE ATTEMPTING UPLOAD - avoid retry decorator
+    file_size = os.path.getsize(file)
+    max_size = 10 * 1024 * 1024 * 1024  # 10 GB
+    
+    def format_size(size):
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size < 1024:
+                return f"{size:.2f}{unit}"
+            size /= 1024
+        return f"{size:.2f}TB"
+    
+    if file_size > max_size:
+        log_warn(f"❌ File troppo grande: {file.name} ({format_size(file_size)}) - skipping")
+        too_large_files_in_session.add(file.name)
+        add_failure("TooLarge", folder_name, file.name, folder_path)
+        total_failed += 1
         return
 
     if FIX_DATES:
