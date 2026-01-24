@@ -446,7 +446,8 @@ async def upload_file(file_path):
         log_warn(f"[UPLOAD] Raw exception: {repr(e)}")
         raise
 
-
+async def add_to_album(upload_token, album_id, description, folder_name):
+    log_warn(f"[ALBUM] Adding photo to album {album_id}: {folder_name}")
     
     # Validate upload token
     if not upload_token or len(upload_token) < 10:
@@ -464,7 +465,11 @@ async def upload_file(file_path):
     try:
         log_warn(f"[ALBUM] Sending request to add photo to album")
         log_debug("Request body:", body)
-        response = session.post("https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate", json=body)
+        response = session.post(
+            "https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate",
+            json=body,
+            timeout=(10, 30)
+        )
         
         # Log detailed response information
         log_debug("Response status:", response.status_code)
@@ -500,16 +505,19 @@ async def upload_file(file_path):
         # Handle invalid album ID (400) - album was deleted or is no longer accessible
         if response.status_code == 400 and "Invalid album ID" in response.text:
             log_warn(f"[ALBUM] Album {album_id} has invalid ID, recreating for {folder_name}")
-            if folder_name in state:
-                del state[folder_name]
-                save_json(STATE_FILE, state)
-            new_album_id = search_album_by_name(folder_name) or create_album(folder_name)
+            # Preserve existing path and files
             resolved_path = state.get(folder_name, {}).get('path', str(Path(PHOTO_ROOT_DIR) / folder_name))
-            state[folder_name] = {'album_id': new_album_id, 'path': resolved_path, 'files': []}
+            existing_files = state.get(folder_name, {}).get('files', [])
+            new_album_id = search_album_by_name(folder_name) or create_album(folder_name)
+            state[folder_name] = {'album_id': new_album_id, 'path': resolved_path, 'files': existing_files}
             save_json(STATE_FILE, state)
             body['albumId'] = new_album_id
             log_debug("Retrying with new album ID")
-            response = session.post("https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate", json=body)
+            response = session.post(
+                "https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate",
+                json=body,
+                timeout=(10, 30)
+            )
             
         if response.status_code == 404 and "The provided ID does not match any albums" in response.text:
             # Album no longer exists, remove it from state and create a new one
@@ -524,18 +532,23 @@ async def upload_file(file_path):
             # First try to reuse an existing album with the same title to avoid duplicates
             new_album_id = search_album_by_name(folder_name) or create_album(folder_name)
             # Update state with new album ID
-            # Resolve a stable folder path from existing state or fallback to root/folder_name
+            # Preserve existing path and files
             resolved_path = state.get(folder_name, {}).get('path', str(Path(PHOTO_ROOT_DIR) / folder_name))
+            existing_files = state.get(folder_name, {}).get('files', [])
             state[folder_name] = {
                 'album_id': new_album_id,
                 'path': resolved_path,
-                'files': []
+                'files': existing_files
             }
             save_json(STATE_FILE, state)
             # Retry with new album ID
             body['albumId'] = new_album_id
             log_debug("Retrying with new album ID. Request body:", body)
-            response = session.post("https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate", json=body)
+            response = session.post(
+                "https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate",
+                json=body,
+                timeout=(10, 30)
+            )
             
         if response.status_code != 200:
             log_error(f"[ALBUM] Error response from API: {response.status_code} - {response.text}")
