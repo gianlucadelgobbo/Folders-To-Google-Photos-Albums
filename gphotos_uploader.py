@@ -9,7 +9,7 @@ import sys
 import warnings
 from tqdm import tqdm
 from pathlib import Path
-from tenacity import retry, wait_fixed, stop_after_attempt, wait_exponential
+from tenacity import retry, wait_fixed, stop_after_attempt, wait_exponential, retry_if_exception
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import AuthorizedSession, Request
 from google.oauth2.credentials import Credentials
@@ -29,6 +29,13 @@ import hashlib
 
 # Suppress urllib3 SSL warnings
 warnings.filterwarnings('ignore', category=Warning)
+
+# Custom retry predicate to NOT retry on KeyboardInterrupt
+def retry_if_not_keyboard_interrupt(exception):
+    """Return True unless exception is KeyboardInterrupt."""
+    if isinstance(exception, KeyboardInterrupt):
+        raise exception
+    return True
 
 def log_init(msg):
     print(msg, flush=True)
@@ -229,7 +236,7 @@ def is_album_id_valid(album_id: str) -> bool:
         log_warn(f"[ALBUM] Album ID validation error: {album_id} - {str(e)}")
         return False
 
-@retry(wait=wait_fixed(5), stop=stop_after_attempt(5))
+@retry(wait=wait_fixed(5), stop=stop_after_attempt(5), retry=retry_if_exception(retry_if_not_keyboard_interrupt))
 def create_album(title):
     log_warn(f"[ALBUM] Creating album: {title}")
     
@@ -258,7 +265,7 @@ def create_album(title):
         log_error(f"[ALBUM] Failed to create album {title}: {str(e)}")
         raise
 
-@retry(wait=wait_fixed(5), stop=stop_after_attempt(5))
+@retry(wait=wait_fixed(5), stop=stop_after_attempt(5), retry=retry_if_exception(retry_if_not_keyboard_interrupt))
 def search_album_by_name(title):
     global album_cache
     
@@ -320,7 +327,7 @@ def search_album_by_name(title):
         log_error(f"[ALBUM] Failed to search for album: {str(e)}")
         return None
 
-@retry(wait=wait_exponential(multiplier=2, min=5, max=300), stop=stop_after_attempt(7))
+@retry(wait=wait_exponential(multiplier=2, min=5, max=300), stop=stop_after_attempt(7), retry=retry_if_exception(retry_if_not_keyboard_interrupt))
 async def upload_file(file_path):
     file_size = os.path.getsize(file_path)
     max_size = 10 * 1024 * 1024 * 1024  # 10 GB
@@ -442,7 +449,7 @@ async def upload_file(file_path):
                         "headers": dict(response.headers),
                         "body": response.text
                     })
-                    await asyncio.sleep(retry_after)
+                    await interruptible_sleep(retry_after)
                     raise Exception(f"Rate limit/RESOURCE_EXHAUSTED, retrying after {retry_after}s delay")
 
                 if response.status_code != 200:
@@ -470,7 +477,9 @@ async def upload_file(file_path):
                 log_warn(f"[UPLOAD] Successfully uploaded {file_name}")
                 TIMEOUT_COUNTS.pop(str(file_path), None)  # reset on success
                 # Add delay after successful upload to avoid quota issues
-                await asyncio.sleep(30)  # 30 second delay between uploads
+                if shutdown_handler.check():
+                    raise KeyboardInterrupt()
+                await interruptible_sleep(30)  # 30 second delay between uploads
                 log_debug("Upload token:", upload_token)
                 return upload_token
                 
@@ -484,8 +493,14 @@ async def upload_file(file_path):
                     steps = [180, 300, 600, 1200]
                     cooldown = steps[min(TIMEOUT_COUNTS[key]-1, len(steps)-1)]
                     log_warn(f"[UPLOAD] Timeout/Connection error detected (count={TIMEOUT_COUNTS[key]}). Cooling down for {cooldown}s before retry...")
-                    await asyncio.sleep(cooldown)
+                    # Check shutdown before starting cooldown
+                    if shutdown_handler.check():
+                        raise KeyboardInterrupt()
+                    await interruptible_sleep(cooldown)
                 raise
+    except KeyboardInterrupt:
+        log_warn(f"[UPLOAD] Upload interrupted by user")
+        raise
     except Exception as e:
         log_error(f"[UPLOAD] Failed to upload {file_name}: {str(e)}", exc_info=True)
         log_warn(f"[UPLOAD] Raw exception: {repr(e)}")
@@ -544,7 +559,9 @@ async def add_to_album(upload_token, album_id, description, folder_name):
                 "headers": dict(response.headers),
                 "body": response.text
             })
-            await asyncio.sleep(retry_after)
+            if shutdown_handler.check():
+                raise KeyboardInterrupt()
+            await interruptible_sleep(retry_after)
             raise Exception(f"Rate limit/RESOURCE_EXHAUSTED, retrying after {retry_after}s delay")
         
         # Handle invalid album ID (400) - album was deleted or is no longer accessible
@@ -679,7 +696,9 @@ async def add_existing_media_to_album(media_item_id, album_id, folder_name):
                 "headers": dict(response.headers),
                 "body": response.text
             })
-            await asyncio.sleep(retry_after)
+            if shutdown_handler.check():
+                raise KeyboardInterrupt()
+            await interruptible_sleep(retry_after)
             raise Exception(f"Rate limit/RESOURCE_EXHAUSTED, retrying after {retry_after}s delay")
         
         # Handle invalid album ID (400) - album was deleted or is no longer accessible
@@ -1096,6 +1115,18 @@ async def retry_failed():
                     log_warn(f"❌ Failed to retry file: {file_name}")
 
     log_warn("Retry process completed. Exiting.")
+
+async def interruptible_sleep(total_seconds: int, step: float = 0.5):
+    """
+    Sleep that wakes up frequently to check shutdown signal.
+    Allows Ctrl+C to interrupt immediately instead of waiting for sleep to complete.
+    """
+    remaining = total_seconds
+    while remaining > 0:
+        if shutdown_handler.check():
+            raise KeyboardInterrupt()
+        await asyncio.sleep(min(step, remaining))
+        remaining -= step
 
 def stage_local_copy_if_cloud(path: Path) -> Path:
     """
