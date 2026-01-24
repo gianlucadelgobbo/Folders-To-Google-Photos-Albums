@@ -11,7 +11,8 @@ from tqdm import tqdm
 from pathlib import Path
 from tenacity import retry, wait_fixed, stop_after_attempt, wait_exponential
 from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import AuthorizedSession
+from google.auth.transport.requests import AuthorizedSession, Request
+from google.oauth2.credentials import Credentials
 import argparse
 import subprocess
 import re
@@ -24,6 +25,7 @@ from requests.exceptions import ReadTimeout, ConnectTimeout, Timeout, Connection
 import shutil
 import signal
 import tempfile
+import hashlib
 
 # Suppress urllib3 SSL warnings
 warnings.filterwarnings('ignore', category=Warning)
@@ -66,6 +68,7 @@ SCOPES = [
     'https://www.googleapis.com/auth/photoslibrary.readonly'
 ]
 CREDENTIALS_FILE = 'credentials.json'
+TOKEN_FILE = 'token.json'
 LOG_FILE = 'upload.log'
 STATE_FILE = 'upload_state.json'
 FAILED_FILE = 'failed_uploads.json'
@@ -142,17 +145,53 @@ album_cache = {}
 
 # === AUTH ===
 def authenticate():
+    """
+    OAuth authentication with token persistence.
+    First run: browser login + save token.json
+    Subsequent runs: load token.json, auto-refresh if expired
+    """
+    creds = None
+    
     try:
-        log_warn("[AUTH] Starting authentication process...")
+        # 1. Check if credentials file exists
         if not os.path.exists(CREDENTIALS_FILE):
             log_error(f"[AUTH] Credentials file not found: {CREDENTIALS_FILE}")
             raise FileNotFoundError(f"Credentials file not found: {CREDENTIALS_FILE}")
+        
+        # 2. Load existing token if present
+        if os.path.exists(TOKEN_FILE):
+            log_warn("[AUTH] Loading existing token.json")
+            try:
+                creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+                log_warn("[AUTH] Token loaded successfully")
+            except Exception as e:
+                log_warn(f"[AUTH] Failed to load token.json: {e}, will re-authenticate")
+                creds = None
+        
+        # 3. If no creds or invalid, refresh or re-auth
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                log_warn("[AUTH] Token expired, refreshing...")
+                try:
+                    creds.refresh(Request())
+                    log_warn("[AUTH] Token refreshed successfully")
+                except Exception as e:
+                    log_warn(f"[AUTH] Refresh failed: {e}, re-authenticating")
+                    creds = None
             
-        log_warn("[AUTH] Loading credentials file...")
-        flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-        log_warn("[AUTH] Starting local server for OAuth flow...")
-        creds = flow.run_local_server(port=0)
-        log_warn("[AUTH] Successfully obtained credentials")
+            # If still no valid creds, do full OAuth flow
+            if not creds or not creds.valid:
+                log_warn("[AUTH] Starting OAuth flow (browser will open)")
+                flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+                creds = flow.run_local_server(port=0, prompt="consent")
+                log_warn("[AUTH] Successfully obtained credentials via OAuth")
+        
+        # 4. Save token for next runs
+        with open(TOKEN_FILE, "w") as token:
+            token.write(creds.to_json())
+            log_warn(f"[AUTH] Saved token.json for future runs")
+        
+        log_warn(f"[AUTH] Granted scopes: {creds.scopes}")
         return AuthorizedSession(creds)
     except Exception as e:
         log_error(f"[AUTH] Authentication failed: {str(e)}", exc_info=True)
@@ -177,10 +216,15 @@ def is_album_id_valid(album_id: str) -> bool:
             f"https://photoslibrary.googleapis.com/v1/albums/{album_id}",
             timeout=(10, 30)
         )
-        is_valid = response.status_code == 200
-        if not is_valid:
+        if response.status_code == 200:
+            return True
+        elif response.status_code == 403:
+            # 403 means insufficient scopes to verify, not that album is invalid
+            log_warn(f"[ALBUM] Cannot validate album id due to 403 (insufficient scopes). Assuming valid: {album_id}")
+            return True
+        else:
             log_warn(f"[ALBUM] Album ID validation failed: {album_id} (status {response.status_code})")
-        return is_valid
+            return False
     except Exception as e:
         log_warn(f"[ALBUM] Album ID validation error: {album_id} - {str(e)}")
         return False
@@ -1063,15 +1107,17 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
     if "/Library/CloudStorage/" not in p:
         return path  # Not a CloudStorage file, use as-is
     
-    import tempfile
-    dst = Path(tempfile.gettempdir()) / "gphotos_stage" / path.name
+    import hashlib
+    # Include hash of full path to avoid collisions (e.g., IMG_0001.jpg in different folders)
+    path_sig = hashlib.sha1(str(path).encode()).hexdigest()[:8]
+    dst = Path(tempfile.gettempdir()) / "gphotos_stage" / f"{path_sig}_{path.name}"
     dst.parent.mkdir(parents=True, exist_ok=True)
     
     try:
         log_warn(f"[STAGE] CloudStorage file detected, staging locally: {path.name}")
         with open(path, "rb") as src, open(dst, "wb") as out:
             shutil.copyfileobj(src, out, length=1024*1024)  # 1MB chunks
-        log_warn(f"[STAGE] Staged successfully: {dst}")
+        log_warn(f"[STAGE] Staged successfully: {dst.name}")
         return dst
     except Exception as e:
         log_error(f"[STAGE] Failed to stage file: {str(e)}", exc_info=True)
