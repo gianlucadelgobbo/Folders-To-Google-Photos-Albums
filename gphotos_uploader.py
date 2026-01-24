@@ -22,6 +22,7 @@ import urllib.parse
 import asyncio
 from requests.exceptions import ReadTimeout, ConnectTimeout, Timeout, ConnectionError as RequestsConnectionError
 import shutil
+import signal
 
 # Suppress urllib3 SSL warnings
 warnings.filterwarnings('ignore', category=Warning)
@@ -804,12 +805,46 @@ def force_file_download(file_path: Path) -> bool:
         # Pulisci le risorse
         gc.collect()
 
+# === SIGNAL HANDLING ===
+class GracefulShutdown:
+    """Handle graceful shutdown on Ctrl+C"""
+    def __init__(self):
+        self.shutdown_requested = False
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+    
+    def _signal_handler(self, signum, frame):
+        log_warn(f"\n[SHUTDOWN] Received signal {signum}. Shutting down gracefully...")
+        self.shutdown_requested = True
+        # Cancel all pending tasks
+        try:
+            for task in asyncio.all_tasks():
+                task.cancel()
+        except Exception:
+            pass
+    
+    def check(self):
+        """Check if shutdown was requested"""
+        return self.shutdown_requested
+
+shutdown_handler = GracefulShutdown()
+
 # === MAIN ===
 total_uploaded = 0
 total_failed = 0
 
 async def retry_failed():
     log_warn("🔁 Modalità retry: elaborazione file falliti da failed_uploads.json...\n")
+    
+    # Build a set of files that are too large to ever retry
+    too_large_files = set()
+    for folder_name, entry in failures.get("TooLarge", {}).items():
+        for file_name in entry.get("files", []):
+            too_large_files.add(file_name)
+    
+    if too_large_files:
+        log_warn(f"[RETRY] Found {len(too_large_files)} file(s) marked as too large - these will be skipped")
+    
     for error_type in ["UploadError", "AddToAlbumError"]:
         log_warn(f"[RETRY] Processing {error_type} failures...")
         for folder_name in list(failures.get(error_type, {}).keys()):
@@ -842,8 +877,20 @@ async def retry_failed():
                     continue
 
             for item in file_list[:]:
+                # Check for shutdown signal
+                if shutdown_handler.check():
+                    log_warn("[RETRY] Shutdown requested, stopping retry process...")
+                    save_json(FAILED_FILE, failures)
+                    return
+                
                 # item can be a filename (str) or a dict (for AddToAlbumError)
                 file_name = item.get("name") if isinstance(item, dict) else item
+                
+                # Skip files that are too large - no point retrying
+                if file_name in too_large_files:
+                    log_warn(f"[RETRY] ⏭️  Skipping {file_name} (file too large, will not retry)")
+                    continue
+                
                 log_warn(f"[RETRY] Processing file: {file_name}")
                 
                 # Handle AddToAlbumError differently - skip upload, use stored token/ID
@@ -1002,6 +1049,11 @@ async def main():
     total_failed = 0
     
     for folder_path in Path(PHOTO_ROOT_DIR).iterdir():
+        # Check for shutdown signal
+        if shutdown_handler.check():
+            log_warn("[MAIN] Shutdown requested, stopping main process...")
+            break
+        
         if not folder_path.is_dir():
             continue
             
@@ -1028,6 +1080,11 @@ async def main():
                 
         # Process files in folder
         for file in folder_path.iterdir():
+            # Check for shutdown signal
+            if shutdown_handler.check():
+                log_warn("[MAIN] Shutdown requested, stopping file processing...")
+                break
+            
             if file.is_file():
                 await process_file(file, folder_name, album_id, folder_path)
                 
@@ -1037,10 +1094,25 @@ async def main():
     logging.info(f"✔️ Fine script: successi={total_uploaded}, fallimenti={total_failed}")
 
 if __name__ == "__main__":
-    if RETRY_FAILED:
-        asyncio.run(retry_failed())
-    else:
-        asyncio.run(main())
+    try:
+        if RETRY_FAILED:
+            asyncio.run(retry_failed())
+        else:
+            asyncio.run(main())
+    except KeyboardInterrupt:
+        log_warn("\n[INTERRUPTED] Script interrupted by user")
+    except asyncio.CancelledError:
+        log_warn("\n[CANCELLED] Async operations cancelled")
+    except Exception as e:
+        log_error(f"[ERROR] Unexpected error: {str(e)}", exc_info=True)
+    finally:
+        try:
+            if session:
+                session.close()
+                log_warn("[CLEANUP] Session closed")
+        except Exception as e:
+            log_warn(f"[CLEANUP] Error closing session: {e}")
+        log_warn("[SHUTDOWN] Script terminated")
 # === REPORT ===
 log_warn("\n✅ Elaborazione completata.")
 log_warn(f"📸 File caricati con successo: {total_uploaded}")
