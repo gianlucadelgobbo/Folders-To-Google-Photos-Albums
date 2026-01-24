@@ -23,6 +23,7 @@ import asyncio
 from requests.exceptions import ReadTimeout, ConnectTimeout, Timeout, ConnectionError as RequestsConnectionError
 import shutil
 import signal
+import tempfile
 
 # Suppress urllib3 SSL warnings
 warnings.filterwarnings('ignore', category=Warning)
@@ -745,8 +746,12 @@ def get_exif_datetimeoriginal_exiftool(file_path):
     try:
         result = subprocess.run(
             ["exiftool", "-s", "-s", "-s", "-DateTimeOriginal", file_path],
-            capture_output=True, text=True, check=True, timeout=5
+            capture_output=True, text=True, timeout=5
         )
+        if result.returncode != 0:
+            err_msg = result.stderr.strip() if result.stderr else "unknown error"
+            log_warn(f"[EXIFTOOL-READ] Failed to read EXIF from {Path(file_path).name}: rc={result.returncode} - {err_msg}")
+            return None
         value = result.stdout.strip()
         if not value:
             return None
@@ -790,7 +795,7 @@ def update_exif_date_if_mismatch(file_path, folder_name):
                 add_failure("ExifErrors", folder_name, Path(file_path).name, Path(file_path).parent)
                 log_warn(f"[EXIFTOOL-WRITE] Failed to update EXIF on {file_path}: {e}")
     else:
-        log_warn(f"[EXIFTOOL] EXIF date is ok")
+        log_warn(f"[EXIFTOOL] EXIF date matches folder info (no change needed)")
 
 def update_filesystem_date_if_mismatch(file: Path, folder_name: str):
     folder_info = extract_date_from_folder(folder_name)
@@ -1048,6 +1053,40 @@ async def retry_failed():
 
     log_warn("Retry process completed. Exiting.")
 
+def stage_local_copy_if_cloud(path: Path) -> Path:
+    """
+    If file is on Google Drive CloudStorage, copy to temp locally first.
+    This avoids "online-only" file provider stalls during HTTP upload.
+    Returns local path (original if not CloudStorage, temp if copied).
+    """
+    p = str(path)
+    if "/Library/CloudStorage/" not in p:
+        return path  # Not a CloudStorage file, use as-is
+    
+    import tempfile
+    dst = Path(tempfile.gettempdir()) / "gphotos_stage" / path.name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        log_warn(f"[STAGE] CloudStorage file detected, staging locally: {path.name}")
+        with open(path, "rb") as src, open(dst, "wb") as out:
+            shutil.copyfileobj(src, out, length=1024*1024)  # 1MB chunks
+        log_warn(f"[STAGE] Staged successfully: {dst}")
+        return dst
+    except Exception as e:
+        log_error(f"[STAGE] Failed to stage file: {str(e)}", exc_info=True)
+        log_warn(f"[STAGE] Falling back to original path (may timeout)")
+        return path
+
+def cleanup_staged_file(path: Path):
+    """Remove temporary staged file if it exists"""
+    if str(path).startswith(str(Path(tempfile.gettempdir()))):
+        try:
+            path.unlink()
+            log_warn(f"[STAGE] Cleaned up: {path.name}")
+        except Exception as e:
+            log_warn(f"[STAGE] Could not remove temp file: {e}")
+
 async def process_file(file: Path, folder_name: str, album_id: str, folder_path: Path):
     log_warn(f"Processing file: {file}")
     global total_uploaded, total_failed
@@ -1118,8 +1157,15 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
 
     try:
         log_warn(f"[UPLOAD] Attempting to upload file: {file.name}")
-        upload_token = await upload_file(str(file))
-        log_warn(f"✅ Uploaded {file.name} to {folder_name}")
+        # Stage CloudStorage files locally first to avoid provider stalls
+        local_file = stage_local_copy_if_cloud(file)
+        try:
+            upload_token = await upload_file(str(local_file))
+            log_warn(f"✅ Uploaded {file.name} to {folder_name}")
+        finally:
+            # Clean up staged copy if it was created
+            if local_file != file:
+                cleanup_staged_file(local_file)
     except Exception as e:
         log_error(f"❌ Upload error for '{file}': {str(e)}", exc_info=True)
         add_failure("UploadError", folder_name, file.name, folder_path)
