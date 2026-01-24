@@ -274,6 +274,7 @@ async def upload_file(file_path):
 
     if file_size > max_size:
         log_warn(f"❌ File troppo grande: {file_name} ({format_size(file_size)})")
+        too_large_files_in_session.add(file_name)  # Mark for skipping in this session
         add_failure("TooLarge", folder_name, file_name, Path(file_path).parent)
         raise Exception(f"File too large: {format_size(file_size)} > {format_size(max_size)}")
 
@@ -832,6 +833,7 @@ shutdown_handler = GracefulShutdown()
 # === MAIN ===
 total_uploaded = 0
 total_failed = 0
+too_large_files_in_session = set()  # Track files that are too large during this session
 
 async def retry_failed():
     log_warn("🔁 Modalità retry: elaborazione file falliti da failed_uploads.json...\n")
@@ -978,6 +980,11 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
     # Skip files that are not in the target directory
     if not str(file).startswith(str(folder_path)):
         log_warn(f"Skipping file outside target directory: {file}")
+        return
+
+    # Skip files already marked as too large in this session
+    if file.name in too_large_files_in_session:
+        log_warn(f"⏭️  Skipping {file.name} (already marked as too large)")
         return
 
     # Check if file is already in state
