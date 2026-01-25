@@ -1299,17 +1299,20 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
     p = str(path)
     if "/Library/CloudStorage/" not in p:
         return path  # Not a CloudStorage file, use as-is
-    
+
     import hashlib
-    # Include hash of full path to avoid collisions (e.g., IMG_0001.jpg in different folders)
     path_sig = hashlib.sha1(str(path).encode()).hexdigest()[:8]
     dst = Path(tempfile.gettempdir()) / "gphotos_stage" / f"{path_sig}_{path.name}"
     dst.parent.mkdir(parents=True, exist_ok=True)
-    
+
     try:
         log_warn(f"[STAGE] CloudStorage file detected, staging locally: {path.name}")
-        with open(path, "rb") as src, open(dst, "wb") as out:
-            shutil.copyfileobj(src, out, length=1024*1024)  # 1MB chunks
+
+        # ✅ preserves mtime (critical for Google Photos fallback when EXIF is missing)
+        shutil.copy2(path, dst)
+        st = os.stat(path)
+        os.utime(dst, (st.st_atime, st.st_mtime))
+
         log_warn(f"[STAGE] Staged successfully: {dst.name}")
         return dst
     except Exception as e:
@@ -1319,12 +1322,14 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
 
 def cleanup_staged_file(path: Path):
     """Remove temporary staged file if it exists"""
-    if str(path).startswith(str(Path(tempfile.gettempdir()))):
-        try:
+    stage_root = Path(tempfile.gettempdir()) / "gphotos_stage"
+    try:
+        if stage_root in path.parents:
             path.unlink()
             log_warn(f"[STAGE] Cleaned up: {path.name}")
-        except Exception as e:
-            log_warn(f"[STAGE] Could not remove temp file: {e}")
+    except Exception as e:
+        log_warn(f"[STAGE] Could not remove temp file: {e}")
+
 
 async def process_file(file: Path, folder_name: str, album_id: str, folder_path: Path):
     log_warn(f"Processing file: {file}")
