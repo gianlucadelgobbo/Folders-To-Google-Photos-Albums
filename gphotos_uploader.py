@@ -952,14 +952,23 @@ def force_file_download(file_path: Path) -> bool:
 
 # === SIGNAL HANDLING ===
 class GracefulShutdown:
-    """Handle graceful shutdown on Ctrl+C"""
+    """Handle graceful shutdown on Ctrl+C - double Ctrl+C for hard exit"""
     def __init__(self):
         self.shutdown_requested = False
+        self._last_sigint = 0.0
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
     
     def _signal_handler(self, signum, frame):
-        log_warn(f"\n[SHUTDOWN] Received signal {signum}. Shutting down gracefully...")
+        import time
+        now = time.time()
+        # Double Ctrl+C within 1 second = hard exit
+        if now - self._last_sigint < 1.0:
+            log_warn(f"\n[SHUTDOWN] Second Ctrl+C → forcing exit NOW (no waiting)", flush=True)
+            import os
+            os._exit(130)  # Immediate exit, no cleanup
+        self._last_sigint = now
+        log_warn(f"\n[SHUTDOWN] Received signal {signum}. Shutting down gracefully... (press Ctrl+C again to force exit)", flush=True)
         self.shutdown_requested = True
         # Cancel all pending tasks
         try:
@@ -1243,10 +1252,16 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
         try:
             upload_token = await upload_file(str(local_file))
             log_warn(f"✅ Uploaded {file.name} to {folder_name}")
+            # CRITICAL: Check if shutdown requested before proceeding to album operations
+            if shutdown_handler.check():
+                raise KeyboardInterrupt()
         finally:
             # Clean up staged copy if it was created
             if local_file != file:
                 cleanup_staged_file(local_file)
+    except KeyboardInterrupt:
+        log_warn(f"[SHUTDOWN] Interrupted during upload cleanup for {file.name}")
+        raise
     except Exception as e:
         log_error(f"❌ Upload error for '{file}': {str(e)}", exc_info=True)
         add_failure("UploadError", folder_name, file.name, folder_path)
@@ -1255,6 +1270,9 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
 
     try:
         log_warn(f"[ALBUM] Attempting to add {file.name} to album {folder_name}")
+        # Check shutdown before proceeding with album operations
+        if shutdown_handler.check():
+            raise KeyboardInterrupt()
         # Get the photo ID and effective album_id from the add_to_album response
         photo_id, effective_album_id = await add_to_album(upload_token, album_id, file.name, folder_name)
         # Align state with the effective album_id (in case it was recreated)
@@ -1265,6 +1283,9 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
         logging.info(f"✅ {file.name} → {folder_name}")
         total_uploaded += 1
         return True
+    except KeyboardInterrupt:
+        log_warn(f"[SHUTDOWN] Interrupted during album operations for {file.name}")
+        raise
     except Exception as e:
         log_error(f"❌ Album error for '{file}': {str(e)}", exc_info=True)
         add_failure("AddToAlbumError", folder_name, file.name, folder_path, album_id=album_id, upload_token=upload_token)
