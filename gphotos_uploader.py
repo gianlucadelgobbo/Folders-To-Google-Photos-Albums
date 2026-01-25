@@ -1240,9 +1240,10 @@ async def retry_failed():
                 # Below is only for UploadError branch; now build the path
                 file = folder_path / file_name
                 log_warn(f"[DEBUG] File extension: {file.suffix} (lowercase: {file.suffix.lower()})")
-                # Skip files with unsupported extensions (for UploadError only)
-                if file.suffix.lower() not in SUPPORTED_EXIF_EXT:
-                    log_warn(f"❌ Skipping file with unsupported extension: {file_name}")
+                # Skip files with unsupported media types (use same check as main path)
+                if not is_supported_media(file):
+                    mime_type, _ = mimetypes.guess_type(str(file))
+                    log_warn(f"❌ Unsupported media type: {file_name} (MIME: {mime_type or 'unknown'}) - skipping")
                     failures[error_type][folder_name]["files"].remove(file_name)
                     if not failures[error_type][folder_name]["files"]:
                         del failures[error_type][folder_name]
