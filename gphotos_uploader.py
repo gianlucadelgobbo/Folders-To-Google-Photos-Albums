@@ -26,6 +26,7 @@ import shutil
 import signal
 import tempfile
 import hashlib
+import mimetypes
 
 # Suppress urllib3 SSL warnings
 warnings.filterwarnings('ignore', category=Warning)
@@ -43,7 +44,20 @@ def log_init(msg):
 
 log_init("[INIT] Script starting...")
 
-SUPPORTED_EXIF_EXT = ('.jpg', '.jpeg', '.heic', '.heif', '.cr2', '.tif', '.tiff', '.mov', '.mp4', '.nef', '.flv','.avi','.m4v','.mgg','.swf','.rw2')
+SUPPORTED_EXIF_EXT = ('.jpg', '.jpeg', '.heic', '.heif', '.cr2', '.tif', '.tiff', '.mov', '.mp4', '.nef', '.flv', '.avi', '.m4v', '.mgg', '.rw2')
+
+def is_supported_media(file_path: Path) -> bool:
+    """Check if file is a supported Google Photos media type (image or video)"""
+    mime_type, _ = mimetypes.guess_type(str(file_path))
+    
+    if not mime_type:
+        # Fallback to extension-based check if MIME detection fails
+        ext = file_path.suffix.lower()
+        return ext in {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.heic', '.heif', '.raw', '.cr2', '.nef', '.rw2', 
+                      '.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.webm', '.m4v', '.3gp', '.3g2', '.mts', '.m2ts', '.wm'}
+    
+    # Only accept image/* and video/* MIME types
+    return mime_type.startswith('image/') or mime_type.startswith('video/')
 
 # === CLI ===
 log_init("[INIT] Setting up argument parser...")
@@ -1198,6 +1212,14 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
     if file_already_processed:
         if DRY_RUN:
             log_warn(f"[DRY-RUN] Skipping already processed file: {file.name}")
+        return
+
+    # CHECK MEDIA TYPE - skip unsupported formats BEFORE upload
+    if not is_supported_media(file):
+        mime_type, _ = mimetypes.guess_type(str(file))
+        log_warn(f"❌ Unsupported media type: {file.name} (MIME: {mime_type or 'unknown'}) - skipping")
+        add_failure("UnsupportedMedia", folder_name, file.name, folder_path)
+        total_failed += 1
         return
 
     # CHECK FILE SIZE BEFORE ATTEMPTING UPLOAD - avoid retry decorator
