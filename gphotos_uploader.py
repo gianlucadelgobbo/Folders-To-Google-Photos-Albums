@@ -47,17 +47,27 @@ log_init("[INIT] Script starting...")
 SUPPORTED_EXIF_EXT = ('.jpg', '.jpeg', '.heic', '.heif', '.cr2', '.tif', '.tiff', '.mov', '.mp4', '.nef', '.flv', '.avi', '.m4v', '.mgg', '.rw2')
 
 def is_supported_media(file_path: Path) -> bool:
-    """Check if file is a supported Google Photos media type (image or video)"""
+    """Check if file is a supported Google Photos media type (image or video)
+    
+    Tries MIME type first, then falls back to extension if MIME is unreliable.
+    """
     mime_type, _ = mimetypes.guess_type(str(file_path))
+    ext = file_path.suffix.lower()
     
-    if not mime_type:
-        # Fallback to extension-based check if MIME detection fails
-        ext = file_path.suffix.lower()
-        return ext in {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.heic', '.heif', '.raw', '.cr2', '.nef', '.rw2', 
-                      '.mp4', '.mov', '.avi', '.mkv', '.flv', '.wmv', '.webm', '.m4v', '.3gp', '.3g2', '.mts', '.m2ts', '.wm'}
+    # Primary: MIME type detection
+    if mime_type:
+        return mime_type.startswith('image/') or mime_type.startswith('video/')
     
-    # Only accept image/* and video/* MIME types
-    return mime_type.startswith('image/') or mime_type.startswith('video/')
+    # Fallback: extension whitelist (for cases where MIME is missing or unreliable)
+    supported_exts = {
+        # Images
+        ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
+        ".heic", ".heif", ".raw", ".cr2", ".nef", ".rw2",
+        # Video
+        ".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".webm",
+        ".m4v", ".3gp", ".3g2", ".mts", ".m2ts", ".wm"
+    }
+    return ext in supported_exts
 
 # === CLI ===
 log_init("[INIT] Setting up argument parser...")
@@ -1218,7 +1228,7 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
     if not is_supported_media(file):
         mime_type, _ = mimetypes.guess_type(str(file))
         log_warn(f"❌ Unsupported media type: {file.name} (MIME: {mime_type or 'unknown'}) - skipping")
-        add_failure("UnsupportedMedia", folder_name, file.name, folder_path)
+        add_failure("UnsupportedFormat", folder_name, file.name, folder_path)
         total_failed += 1
         return
 
