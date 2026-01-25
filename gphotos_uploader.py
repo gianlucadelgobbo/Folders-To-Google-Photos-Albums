@@ -367,6 +367,20 @@ def search_album_by_name(title):
 @retry(wait=wait_exponential(multiplier=2, min=5, max=300), stop=stop_after_attempt(7), retry=retry_if_exception(retry_if_not_keyboard_interrupt))
 async def upload_file(file_path):
     file_size = os.path.getsize(file_path)
+    # 🚨 HARD STOP: empty staged file → DO NOT RETRY
+    if file_size == 0:
+        error_msg = "Empty staged file (0 bytes). Cloud hydration failed."
+        log_error(f"[UPLOAD] {error_msg}")
+
+        # Mark as permanent failure
+        add_failure(
+            "UploadError",
+            folder_name=Path(file_path).parent.name,
+            file_name=Path(file_path).name,
+            folder_path=Path(file_path).parent
+        )
+
+        raise RuntimeError(error_msg)
     max_size = 10 * 1024 * 1024 * 1024  # 10 GB
 
     folder_name = Path(file_path).parent.name
@@ -1293,12 +1307,12 @@ async def interruptible_sleep(total_seconds: int, step: float = 0.5):
 def stage_local_copy_if_cloud(path: Path) -> Path:
     """
     If file is on Google Drive CloudStorage, copy to temp locally first.
-    This avoids "online-only" file provider stalls during HTTP upload.
-    Returns local path (original if not CloudStorage, temp if copied).
+    Streaming copy forces hydration of online-only placeholders.
+    Then we restore timestamps so Google Photos fallback date doesn't become "today".
     """
     p = str(path)
     if "/Library/CloudStorage/" not in p:
-        return path  # Not a CloudStorage file, use as-is
+        return path
 
     import hashlib
     path_sig = hashlib.sha1(str(path).encode()).hexdigest()[:8]
@@ -1308,16 +1322,31 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
     try:
         log_warn(f"[STAGE] CloudStorage file detected, staging locally: {path.name}")
 
-        # ✅ preserves mtime (critical for Google Photos fallback when EXIF is missing)
-        shutil.copy2(path, dst)
+        # Source stats (may be non-hydrated but we still keep mtime)
         st = os.stat(path)
+        src_size = st.st_size
+        log_warn(f"[STAGE] Source size (stat): {src_size} bytes")
+
+        # ✅ STREAMING COPY forces download/hydration
+        with open(path, "rb") as src, open(dst, "wb") as out:
+            shutil.copyfileobj(src, out, length=1024 * 1024)  # 1MB chunks
+
+        # Verify copy
+        dst_size = dst.stat().st_size
+        log_warn(f"[STAGE] Staged size: {dst_size} bytes")
+
+        if dst_size == 0:
+            raise IOError("Staged file is empty (0 bytes). Cloud file likely not hydrated yet.")
+
+        # ✅ Restore timestamps (critical for Google Photos fallback date)
         os.utime(dst, (st.st_atime, st.st_mtime))
 
         log_warn(f"[STAGE] Staged successfully: {dst.name}")
         return dst
+
     except Exception as e:
         log_error(f"[STAGE] Failed to stage file: {str(e)}", exc_info=True)
-        log_warn(f"[STAGE] Falling back to original path (may timeout)")
+        log_warn("[STAGE] Falling back to original path (may timeout)")
         return path
 
 def cleanup_staged_file(path: Path):
