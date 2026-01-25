@@ -175,6 +175,10 @@ failures = load_json(FAILED_FILE, {
 album_cache = {}
 
 # === AUTH ===
+def _scopes_ok(creds, required_scopes):
+    granted = set(creds.scopes or [])
+    return set(required_scopes).issubset(granted)
+
 def authenticate():
     """
     OAuth authentication with token persistence.
@@ -182,52 +186,61 @@ def authenticate():
     Subsequent runs: load token.json, auto-refresh if expired
     """
     creds = None
-    
+
     try:
-        # 1. Check if credentials file exists
+        # 1) credentials.json exists?
         if not os.path.exists(CREDENTIALS_FILE):
             log_error(f"[AUTH] Credentials file not found: {CREDENTIALS_FILE}")
             raise FileNotFoundError(f"Credentials file not found: {CREDENTIALS_FILE}")
-        
-        # 2. Load existing token if present
+
+        # 2) load token if present
         if os.path.exists(TOKEN_FILE):
             log_warn("[AUTH] Loading existing token.json")
             try:
                 creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
                 log_warn("[AUTH] Token loaded successfully")
+
+                # scope check (forces re-consent if token was created with fewer scopes)
+                if creds and creds.scopes and not _scopes_ok(creds, SCOPES):
+                    log_warn(f"[AUTH] Token scopes insufficient: {creds.scopes} -> forcing re-auth")
+                    creds = None
             except Exception as e:
                 log_warn(f"[AUTH] Failed to load token.json: {e}, will re-authenticate")
                 creds = None
-        
-        # 3. If no creds or invalid, refresh or re-auth
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                log_warn("[AUTH] Token expired, refreshing...")
-                try:
-                    creds.refresh(Request())
-                    log_warn("[AUTH] Token refreshed successfully")
-                except Exception as e:
-                    log_warn(f"[AUTH] Refresh failed: {e}, re-authenticating")
+
+        # 3) refresh if possible
+        if creds and creds.expired and creds.refresh_token:
+            log_warn("[AUTH] Token expired, refreshing...")
+            try:
+                creds.refresh(Request())
+                log_warn("[AUTH] Token refreshed successfully")
+
+                if creds and creds.scopes and not _scopes_ok(creds, SCOPES):
+                    log_warn(f"[AUTH] Token scopes insufficient after refresh: {creds.scopes} -> forcing re-auth")
                     creds = None
-            
-            # If still no valid creds, do full OAuth flow
-            if not creds or not creds.valid:
-                log_warn("[AUTH] Starting OAuth flow (browser will open)")
-                flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-                creds = flow.run_local_server(port=0, prompt="consent")
-                log_warn("[AUTH] Successfully obtained credentials via OAuth")
-        
-        # 4. Save token for next runs
-        with open(TOKEN_FILE, "w") as token:
-            token.write(creds.to_json())
-            log_warn(f"[AUTH] Saved token.json for future runs")
-        
+            except Exception as e:
+                log_warn(f"[AUTH] Refresh failed: {e}, re-authenticating")
+                creds = None
+
+        # 4) full OAuth if still missing/invalid
+        if not creds or not creds.valid:
+            log_warn("[AUTH] Starting OAuth flow (browser will open)")
+            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+            creds = flow.run_local_server(port=0, prompt="consent")
+            log_warn("[AUTH] Successfully obtained credentials via OAuth")
+
+        # 5) save token only if creds OK
+        if creds and creds.valid:
+            with open(TOKEN_FILE, "w") as token:
+                token.write(creds.to_json())
+            log_warn("[AUTH] Saved token.json for future runs")
+
         log_warn(f"[AUTH] Granted scopes: {creds.scopes}")
         return AuthorizedSession(creds)
+
     except Exception as e:
         log_error(f"[AUTH] Authentication failed: {str(e)}", exc_info=True)
         raise
-
 try:
     log_warn("[INIT] Initializing Google Photos session...")
     session = authenticate()
@@ -665,7 +678,7 @@ async def add_to_album(upload_token, album_id, description, folder_name):
                 
             status = item['status']
             if status.get('code') == 0 or status.get('message') == 'Success':
-                log_warn(f"[ALBUM] Successfully added photo to album: {description}")
+                log_warn(f"✅ ✅ [ALBUM] Successfully added photo to album: {description}")
                 photo_id = item.get('mediaItem', {}).get('id')
                 return photo_id, body['albumId']  # Return both photo_id and the effective album_id used
             else:
@@ -1473,6 +1486,9 @@ async def main():
                 
         # Process files in folder
         for file in folder_path.iterdir():
+            log_warn("\n" + "=" * 120)
+            log_warn(f"[FILE] Processing new file: {file}")
+            log_warn("=" * 120)
             # Check for shutdown signal
             if shutdown_handler.check():
                 log_warn("[MAIN] Shutdown requested, stopping file processing...")
