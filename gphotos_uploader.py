@@ -226,9 +226,9 @@ def is_album_id_valid(album_id: str) -> bool:
         if response.status_code == 200:
             return True
         elif response.status_code == 403:
-            # 403 means insufficient scopes to verify, not that album is invalid
-            log_warn(f"[ALBUM] Cannot validate album id due to 403 (insufficient scopes). Assuming valid: {album_id}")
-            return True
+            # 403 = insufficient scopes OR album is inaccessible/deleted. Treat as INVALID to force recreation
+            log_warn(f"[ALBUM] Album id {album_id} returned 403 → treating as INVALID (will recreate)")
+            return False
         else:
             log_warn(f"[ALBUM] Album ID validation failed: {album_id} (status {response.status_code})")
             return False
@@ -567,11 +567,15 @@ async def add_to_album(upload_token, album_id, description, folder_name):
         # Handle invalid album ID (400) - album was deleted or is no longer accessible
         if response.status_code == 400 and "Invalid album ID" in response.text:
             log_warn(f"[ALBUM] Album {album_id} has invalid ID, recreating for {folder_name}")
-            # Preserve existing path and files
-            resolved_path = state.get(folder_name, {}).get('path', str(Path(PHOTO_ROOT_DIR) / folder_name))
-            existing_files = state.get(folder_name, {}).get('files', [])
+            # CRITICAL: Delete the zombie ID from state and cache to prevent infinite loop
+            if folder_name in state:
+                del state[folder_name]
+                save_json(STATE_FILE, state)
+            if folder_name in album_cache:
+                del album_cache[folder_name]
+            # Now search for existing or create new album (without the poison ID)
             new_album_id = search_album_by_name(folder_name) or create_album(folder_name)
-            state[folder_name] = {'album_id': new_album_id, 'path': resolved_path, 'files': existing_files}
+            state[folder_name] = {'album_id': new_album_id, 'path': str(Path(PHOTO_ROOT_DIR) / folder_name), 'files': []}
             save_json(STATE_FILE, state)
             body['albumId'] = new_album_id
             log_debug("Retrying with new album ID")
