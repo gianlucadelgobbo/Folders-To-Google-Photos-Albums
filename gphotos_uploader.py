@@ -833,60 +833,171 @@ def extract_date_from_folder(folder_name):
     day = int(match.group(3)) if match.group(3) else None
     return year, month, day
 
-def get_exif_datetimeoriginal_exiftool(file_path):
+# ===== NEW: Google Photos date tags (EXIF + QuickTime) =====
+EXIF_DATE_FMT = "%Y:%m:%d %H:%M:%S"
+GP_DATE_TAGS = [
+    "EXIF:DateTimeOriginal",
+    "EXIF:CreateDate",
+    "EXIF:ModifyDate",
+    "QuickTime:CreateDate",
+    "QuickTime:ModifyDate",
+    "QuickTime:MediaCreateDate",
+    "QuickTime:MediaModifyDate",
+    "QuickTime:TrackCreateDate",
+    "QuickTime:TrackModifyDate",
+]
+
+def _parse_exiftool_dt(s: str):
+    """Parse exiftool datetime string, handling timezone offsets."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    # exiftool sometimes adds timezone like "2020:01:01 10:00:00+01:00"
+    # take only the base part
+    base = s[:19]
     try:
-        result = subprocess.run(
-            ["exiftool", "-s", "-s", "-s", "-DateTimeOriginal", file_path],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode != 0:
-            err_msg = result.stderr.strip() if result.stderr else "unknown error"
-            log_warn(f"[EXIFTOOL-READ] Failed to read EXIF from {Path(file_path).name}: rc={result.returncode} - {err_msg}")
-            return None
-        value = result.stdout.strip()
-        if not value:
-            return None
-        return datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
-    except Exception as e:
-        log_warn(f"[EXIFTOOL-READ] Failed to read EXIF from {file_path}: {e}")
+        return datetime.strptime(base, EXIF_DATE_FMT)
+    except Exception:
         return None
 
-def update_exif_date_if_mismatch(file_path, folder_name):
+def get_gphotos_relevant_dates_exiftool(file_path):
+    """Read all Google-Photos-relevant date tags (EXIF + QuickTime) in one call.
+    
+    Uses explicit tag:value format to avoid misalignment if tags don't exist.
+    """
+    # Use -a to print all occurrences and tag name with each value
+    args = ["exiftool", "-a"]
+    for t in GP_DATE_TAGS:
+        args.append(f"-{t}")
+    args.append(file_path)
+
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=8)
+        if r.returncode != 0:
+            # Don't crash: return empty dict, will use filesystem mtime as fallback
+            return {}
+        
+        out = {}
+        # Parse "TagName : Value" format
+        for line in r.stdout.splitlines():
+            line = line.strip()
+            if not line or ':' not in line:
+                continue
+            
+            # Split on first colon only
+            tag_part, val_part = line.split(':', 1)
+            tag_part = tag_part.strip()
+            val_part = val_part.strip()
+            
+            # Match tag against our requested tags
+            for gp_tag in GP_DATE_TAGS:
+                # exiftool output format is "TagGroup:TagName", we need to match the end
+                if tag_part.endswith(gp_tag.replace(":", ":")):
+                    dt = _parse_exiftool_dt(val_part)
+                    if dt:
+                        out[gp_tag] = dt
+                    break
+        
+        return out
+    except Exception as e:
+        log_warn(f"[EXIFTOOL-READ] Failed reading multi-date tags on {file_path}: {e}")
+        return {}
+
+def is_solidal(folder_info, dt: datetime) -> bool:
+    """Check if dt matches folder info (year/month/day as specified)."""
+    if not dt:
+        return False
+    y, m, d = folder_info
+    if y is not None and dt.year != y:
+        return False
+    if m is not None and dt.month != m:
+        return False
+    if d is not None and dt.day != d:
+        return False
+    return True
+
+def update_media_dates_if_mismatch(file_path, folder_name):
+    """Update media dates (EXIF for images, QuickTime for video) if not solidal with folder."""
     folder_info = extract_date_from_folder(folder_name)
     log_warn(f"Reading date from folder: {folder_info}")
     if not folder_info:
         return
 
-    exif_dt = get_exif_datetimeoriginal_exiftool(file_path)
-    log_warn(f"Reading exif date from file: {exif_dt}")
-    if not exif_dt:
-        # fallback to filesystem timestamp
-        fs_dt = datetime.fromtimestamp(Path(file_path).stat().st_mtime)
-        exif_dt = fs_dt
+    # 1) Read all dates that matter for Google Photos
+    dates = get_gphotos_relevant_dates_exiftool(file_path)
 
-    new_dt = build_datetime_from_folder_info(exif_dt, folder_info)
+    # 2) Add filesystem mtime as fallback candidate
+    fs_dt = datetime.fromtimestamp(Path(file_path).stat().st_mtime)
+    candidate_dts = list(dates.values()) + [fs_dt]
 
-    if new_dt != exif_dt:
-        dt_str = new_dt.strftime("%Y:%m:%d %H:%M:%S")
-        exif_str = exif_dt.strftime("%Y:%m:%d %H:%M:%S")
-        if DRY_RUN:
-            log_warn(f"[DRY-RUN] Would fix EXIF of {Path(file_path).name}: {exif_str} → {dt_str}")
-        else:
-            try:
-                subprocess.run([
-                    "exiftool",
-                    "-overwrite_original",
-                    f"-DateTimeOriginal={dt_str}",
-                    f"-CreateDate={dt_str}",
-                    f"-ModifyDate={dt_str}",
-                    file_path
-                ], check=True)
-                log_warn(f"[FIXED] {Path(file_path).name} EXIF: {exif_str} → {dt_str}")
-            except subprocess.CalledProcessError as e:
-                add_failure("ExifErrors", folder_name, Path(file_path).name, Path(file_path).parent)
-                log_warn(f"[EXIFTOOL-WRITE] Failed to update EXIF on {file_path}: {e}")
+    # 3) If any date is solidal with folder → no change needed
+    if any(is_solidal(folder_info, dt) for dt in candidate_dts if dt):
+        log_warn("[DATES] Dates are solidal with folder info (no change needed)")
+        return
+
+    # 4) Mismatch: pick a "base time" to preserve hour/min/sec
+    # Priority: DateTimeOriginal → QuickTime:CreateDate → fs mtime
+    base_dt = (
+        dates.get("EXIF:DateTimeOriginal")
+        or dates.get("QuickTime:CreateDate")
+        or fs_dt
+    )
+
+    new_dt = build_datetime_from_folder_info(base_dt, folder_info)
+    dt_str = new_dt.strftime(EXIF_DATE_FMT)
+
+    if DRY_RUN:
+        log_warn(f"[DRY-RUN] Would fix media dates of {Path(file_path).name}: base={base_dt} → {new_dt}")
+        return
+
+    # 5) Determine if video based on MIME type or extension
+    mime_type, _ = mimetypes.guess_type(str(file_path))
+    is_video = (
+        (mime_type and mime_type.startswith("video/"))
+        or Path(file_path).suffix.lower() in (".mov", ".mp4", ".m4v", ".avi", ".flv", ".wmv", ".mkv", ".webm", ".3gp", ".3g2", ".mts", ".m2ts")
+    )
+
+    if is_video:
+        # Update QuickTime tags (what Google Photos uses for video)
+        cmd = [
+            "exiftool",
+            "-overwrite_original",
+            f"-QuickTime:CreateDate={dt_str}",
+            f"-QuickTime:ModifyDate={dt_str}",
+            f"-QuickTime:MediaCreateDate={dt_str}",
+            f"-QuickTime:MediaModifyDate={dt_str}",
+            f"-QuickTime:TrackCreateDate={dt_str}",
+            f"-QuickTime:TrackModifyDate={dt_str}",
+            # Also update EXIF for consistency
+            f"-CreateDate={dt_str}",
+            f"-ModifyDate={dt_str}",
+            file_path
+        ]
     else:
-        log_warn(f"[EXIFTOOL] EXIF date matches folder info (no change needed)")
+        # Update EXIF tags (images/raw)
+        cmd = [
+            "exiftool",
+            "-overwrite_original",
+            f"-DateTimeOriginal={dt_str}",
+            f"-CreateDate={dt_str}",
+            f"-ModifyDate={dt_str}",
+            file_path
+        ]
+
+    try:
+        subprocess.run(cmd, check=True)
+        log_warn(f"[FIXED] {Path(file_path).name} dates aligned to folder: {dt_str}")
+        # 6) Align filesystem mtime/atime ONLY after exiftool succeeds
+        # This prevents desync if exiftool fails partway
+        update_file_timestamp(Path(file_path), new_dt)
+    except subprocess.CalledProcessError as e:
+        add_failure("ExifErrors", folder_name, Path(file_path).name, Path(file_path).parent)
+        log_warn(f"[EXIFTOOL-WRITE] Failed to update dates on {file_path}: {e}")
+
+def get_exif_datetimeoriginal_exiftool(file_path):
+    """Legacy function - now just reads from the new multi-date function."""
+    dates = get_gphotos_relevant_dates_exiftool(file_path)
+    return dates.get("EXIF:DateTimeOriginal") or dates.get("QuickTime:CreateDate")
 
 def update_filesystem_date_if_mismatch(file: Path, folder_name: str):
     folder_info = extract_date_from_folder(folder_name)
@@ -1252,18 +1363,17 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
 
     if FIX_DATES:
         force_file_download(file)
-        # EXIF operations only for supported formats
-        if file.suffix.lower() in SUPPORTED_EXIF_EXT:
+        # Update media dates (now handles both EXIF and QuickTime tags)
+        if is_supported_media(file):
             if DRY_RUN:
-                log_warn(f"[DRY-RUN] Would check and update EXIF date for: {file.name}")
-                update_exif_date_if_mismatch(str(file), folder_name)
+                log_warn(f"[DRY-RUN] Would check and update media dates for: {file.name}")
             else:
-                update_exif_date_if_mismatch(str(file), folder_name)
+                update_media_dates_if_mismatch(str(file), folder_name)
         else:
             if DRY_RUN:
-                log_warn(f"[DRY-RUN] Would skip EXIF operations for unsupported format: {file.name}")
+                log_warn(f"[DRY-RUN] Would skip media operations for unsupported format: {file.name}")
             else:
-                log_warn(f"❌ Skip EXIF operations for unsupported format: {file.name}")
+                log_warn(f"❌ Skip media operations for unsupported format: {file.name}")
 
         # Filesystem timestamp update for all files
         if DRY_RUN:
