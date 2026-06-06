@@ -1471,16 +1471,8 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
         log_warn(f"⏭️  Skipping {file.name} (already marked as too large)")
         return
 
-    # Check if file is already in state
-    files = set(state.get(folder_name, {}).get('files', []))
-    file_already_processed = file.name in files
-
-    if file_already_processed:
-        if DRY_RUN:
-            log_warn(f"[DRY-RUN] Skipping already processed file: {file.name}")
-        return
-
-    # CHECK MEDIA TYPE - skip unsupported formats BEFORE upload
+    # CHECK MEDIA TYPE before state — unsupported files must always be moved out,
+    # even if they appear in state from a run before GPHOTOS_UNSUPPORTED_EXTS existed.
     if not is_supported_media(file):
         mime_type, _ = mimetypes.guess_type(str(file))
         log_warn(f"❌ Unsupported media type: {file.name} (MIME: {mime_type or 'unknown'}) - moving to _UNSUPPORTED")
@@ -1489,6 +1481,11 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
         else:
             move_to_unsupported(file, folder_name)
         total_failed += 1
+        return
+
+    # Check if file is already in state
+    if file.name in set(state.get(folder_name, {}).get('files', [])):
+        log_warn(f"⏭️  Already uploaded, skipping: {file.name}")
         return
 
     # CHECK FILE SIZE BEFORE ATTEMPTING UPLOAD - avoid retry decorator
