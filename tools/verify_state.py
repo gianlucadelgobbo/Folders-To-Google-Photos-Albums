@@ -26,6 +26,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unicodedata
 import urllib.parse
 import warnings
@@ -173,10 +174,11 @@ def build_global_index():
 
     # Step 2: for each album, fetch all media items
     global_filenames: Set[str] = set()
+    cache_albums: Dict[str, dict] = {}  # album_id → {title, photos:[{filename, id}]}
     for i, (album_id, title) in enumerate(id_to_title.items(), 1):
         log(f'[INDEX] [{i}/{len(id_to_title)}] Listing "{title}"...')
         page_token = None
-        album_count = 0
+        photos = []
         while True:
             body: dict = {'albumId': album_id, 'pageSize': 100}
             if page_token:
@@ -191,13 +193,20 @@ def build_global_index():
             data = r.json()
             for item in data.get('mediaItems', []):
                 fn = item.get('filename', '')
+                mid = item.get('id', '')
                 if fn:
                     global_filenames.add(fn.lower())
-                    album_count += 1
+                    photos.append({'filename': fn, 'id': mid})
             page_token = data.get('nextPageToken')
             if not page_token:
                 break
-        log(f'  → {album_count} item(s)')
+        cache_albums[album_id] = {'title': title, 'photos': photos}
+        log(f'  → {len(photos)} item(s)')
+
+    # Save refreshed cache to galbum_cache.json
+    cache_data = {'timestamp': int(time.time()), 'albums': cache_albums}
+    save_json(ALBUM_CACHE_FILE, cache_data)
+    log(f'[INDEX] Cache saved to {ALBUM_CACHE_FILE}')
 
     log(f'[INDEX] Total: {len(global_filenames)} unique filename(s) in Google Photos')
     return global_filenames, album_map
