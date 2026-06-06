@@ -36,6 +36,10 @@ class NonRetryableError(RuntimeError):
     """Raised for deterministic failures that should not be retried."""
     pass
 
+class EmptyCloudFileError(NonRetryableError):
+    """Raised when a cloud file is confirmed empty (no cloud icon, 0 bytes after copy)."""
+    pass
+
 
 # Custom retry predicate to NOT retry on KeyboardInterrupt or NonRetryableError
 def retry_if_not_keyboard_interrupt(exception):
@@ -1372,6 +1376,24 @@ async def interruptible_sleep(total_seconds: int, step: float = 0.5):
 HYDRATION_MAX_WAIT_SECS = 600   # 10 minutes max wait for Google Drive to download
 HYDRATION_POLL_SECS = 10        # poll every 10 seconds
 
+def is_cloud_placeholder(path: Path) -> bool:
+    """Return True if the file has the cloud download icon in Finder (not yet downloaded).
+
+    Two indicators:
+    1. st_size > 0 but st_blocks == 0: Drive knows the size but nothing is on disk.
+    2. st_size == 0: fallback to xattr — fileprovider attributes mean it's a placeholder.
+    """
+    try:
+        st = os.stat(path)
+        if st.st_size > 0 and st.st_blocks == 0:
+            return True
+        if st.st_size == 0:
+            result = subprocess.run(['xattr', str(path)], capture_output=True, text=True, timeout=5)
+            return 'fileprovider' in result.stdout.lower()
+        return False
+    except Exception:
+        return False
+
 def stage_local_copy_if_cloud(path: Path) -> Path:
     """
     If file is on Google Drive CloudStorage, copy to temp locally first.
@@ -1429,8 +1451,12 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
         log_warn(f"[STAGE] Staged size: {dst_size} bytes")
 
         if dst_size == 0:
-            # Can't distinguish empty file from stalled download → retry later
-            raise NonRetryableError("Staged file is 0 bytes: download may have failed or file is empty in Drive")
+            if is_cloud_placeholder(path):
+                # Still has cloud icon: download stalled or failed → retry later
+                raise NonRetryableError("Staged file is 0 bytes and still shows cloud icon: download failed")
+            else:
+                # No cloud icon after copy: file is genuinely empty in Drive → _TOOSMALL
+                raise EmptyCloudFileError("File is 0 bytes after copy and has no cloud icon: empty in Drive")
 
         # Restore timestamps so Google Photos uses the original date
         os.utime(dst, (st.st_atime, st.st_mtime))
@@ -1438,8 +1464,8 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
         log_warn(f"[STAGE] Staged successfully: {dst.name}")
         return dst
 
-    except KeyboardInterrupt:
-        raise
+    except (EmptyCloudFileError, KeyboardInterrupt):
+        raise  # no fallback: these need to reach process_file
     except Exception as e:
         log_error(f"[STAGE] Failed to stage file: {str(e)}", exc_info=True)
         log_warn("[STAGE] Falling back to original path (may timeout)")
@@ -1495,14 +1521,13 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
     max_size = 10 * 1024 * 1024 * 1024  # 10 GB
 
     if file_size == 0:
-        if "/Library/CloudStorage/" in str(file):
-            # Size is 0 because the file is a cloud placeholder not yet downloaded.
-            # Proceed to staging: opening the file triggers macOS to hydrate it from Drive.
-            # If it's still 0 after staging, NonRetryableError stops the retry immediately.
-            log_warn(f"[CLOUD] {file.name} reports 0 bytes (placeholder) - proceeding to staging to trigger download")
+        if "/Library/CloudStorage/" in str(file) and is_cloud_placeholder(file):
+            # Has cloud icon in Finder: content exists on Drive but hasn't been downloaded.
+            # Proceed to staging which will wait for the download.
+            log_warn(f"[CLOUD] {file.name} is a cloud placeholder (not downloaded yet) - proceeding to staging")
         else:
-            # Genuinely empty local file — move out of the way
-            log_warn(f"[TOOSMALL] Empty local file (0 bytes): {file.name}")
+            # No cloud icon and 0 bytes: file is genuinely empty → move to _TOOSMALL
+            log_warn(f"[TOOSMALL] Empty file (0 bytes, no cloud icon): {file.name}")
             if DRY_RUN:
                 log_warn(f"[DRY-RUN] Would move {file.name} → ../{TOOSMALL_DIR_NAME}/{folder_name}/")
             else:
@@ -1557,6 +1582,14 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
             # Clean up staged copy if it was created
             if local_file != file:
                 cleanup_staged_file(local_file)
+    except EmptyCloudFileError:
+        log_warn(f"[TOOSMALL] File is genuinely empty in Drive (no cloud icon, 0 bytes after copy): {file.name}")
+        if DRY_RUN:
+            log_warn(f"[DRY-RUN] Would move {file.name} → ../{TOOSMALL_DIR_NAME}/{folder_name}/")
+        else:
+            move_to_toosmall(file, folder_name)
+        total_failed += 1
+        return
     except KeyboardInterrupt:
         log_warn(f"[SHUTDOWN] Interrupted during upload cleanup for {file.name}")
         raise
