@@ -36,9 +36,6 @@ class NonRetryableError(RuntimeError):
     """Raised for deterministic failures that should not be retried."""
     pass
 
-class EmptyCloudFileError(NonRetryableError):
-    """Raised when a cloud file is still 0 bytes after waiting for Drive to download it."""
-    pass
 
 # Custom retry predicate to NOT retry on KeyboardInterrupt or NonRetryableError
 def retry_if_not_keyboard_interrupt(exception):
@@ -1432,7 +1429,8 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
         log_warn(f"[STAGE] Staged size: {dst_size} bytes")
 
         if dst_size == 0:
-            raise EmptyCloudFileError("Staged file is 0 bytes after copy: file is empty in Google Drive")
+            # Can't distinguish empty file from stalled download → retry later
+            raise NonRetryableError("Staged file is 0 bytes: download may have failed or file is empty in Drive")
 
         # Restore timestamps so Google Photos uses the original date
         os.utime(dst, (st.st_atime, st.st_mtime))
@@ -1440,8 +1438,8 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
         log_warn(f"[STAGE] Staged successfully: {dst.name}")
         return dst
 
-    except (EmptyCloudFileError, KeyboardInterrupt):
-        raise  # propagate directly, no fallback
+    except KeyboardInterrupt:
+        raise
     except Exception as e:
         log_error(f"[STAGE] Failed to stage file: {str(e)}", exc_info=True)
         log_warn("[STAGE] Falling back to original path (may timeout)")
@@ -1559,14 +1557,6 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
             # Clean up staged copy if it was created
             if local_file != file:
                 cleanup_staged_file(local_file)
-    except EmptyCloudFileError:
-        log_warn(f"[TOOSMALL] Cloud file confirmed empty after download wait: {file.name}")
-        if DRY_RUN:
-            log_warn(f"[DRY-RUN] Would move {file.name} → ../{TOOSMALL_DIR_NAME}/{folder_name}/")
-        else:
-            move_to_toosmall(file, folder_name)
-        total_failed += 1
-        return
     except KeyboardInterrupt:
         log_warn(f"[SHUTDOWN] Interrupted during upload cleanup for {file.name}")
         raise
