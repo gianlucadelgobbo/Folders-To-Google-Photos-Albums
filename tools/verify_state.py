@@ -45,11 +45,12 @@ SCOPES = [
     'https://www.googleapis.com/auth/photoslibrary.appendonly',
     'https://www.googleapis.com/auth/photoslibrary.readonly',
 ]
-CREDENTIALS_FILE = 'credentials.json'
-TOKEN_FILE = 'token.json'
-STATE_FILE = 'upload_state.json'
-FAILED_FILE = 'failed_uploads.json'
-ALBUM_CACHE_FILE = 'galbum_cache.json'
+PROJECT_ROOT = Path(__file__).parent.parent
+CREDENTIALS_FILE = str(PROJECT_ROOT / 'credentials.json')
+TOKEN_FILE = str(PROJECT_ROOT / 'token.json')
+STATE_FILE = str(PROJECT_ROOT / 'upload_state.json')
+FAILED_FILE = str(PROJECT_ROOT / 'failed_uploads.json')
+ALBUM_CACHE_FILE = str(PROJECT_ROOT / 'galbum_cache.json')
 GPHOTOS_UNSUPPORTED_EXTS = {'.flv', '.f4v', '.swf'}
 TOOSMALL_DIR_NAME = '_TOOSMALL'
 UNSUPPORTED_DIR_NAME = '_UNSUPPORTED'
