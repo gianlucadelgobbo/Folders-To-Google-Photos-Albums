@@ -27,6 +27,7 @@ import signal
 import tempfile
 import hashlib
 import mimetypes
+import unicodedata
 
 # Suppress urllib3 SSL warnings
 warnings.filterwarnings('ignore', category=Warning)
@@ -441,8 +442,7 @@ async def upload_file(file_path):
 
     headers = {
         'Content-Type': 'application/octet-stream',
-        #'X-Goog-Upload-File-Name': urllib.parse.quote(file_name),
-        'X-Goog-Upload-File-Name': file_name,
+        'X-Goog-Upload-File-Name': urllib.parse.quote(unicodedata.normalize('NFC', file_name)),
         'X-Goog-Upload-Protocol': 'raw',
     }
     
