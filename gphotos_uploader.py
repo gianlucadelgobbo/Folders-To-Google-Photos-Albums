@@ -36,6 +36,10 @@ class NonRetryableError(RuntimeError):
     """Raised for deterministic failures that should not be retried."""
     pass
 
+class EmptyCloudFileError(NonRetryableError):
+    """Raised when a cloud file is still 0 bytes after waiting for Drive to download it."""
+    pass
+
 # Custom retry predicate to NOT retry on KeyboardInterrupt or NonRetryableError
 def retry_if_not_keyboard_interrupt(exception):
     if isinstance(exception, (KeyboardInterrupt, NonRetryableError)):
@@ -1368,17 +1372,20 @@ async def interruptible_sleep(total_seconds: int, step: float = 0.5):
         await asyncio.sleep(min(step, remaining))
         remaining -= step
 
+HYDRATION_MAX_WAIT_SECS = 600   # 10 minutes max wait for Google Drive to download
+HYDRATION_POLL_SECS = 10        # poll every 10 seconds
+
 def stage_local_copy_if_cloud(path: Path) -> Path:
     """
     If file is on Google Drive CloudStorage, copy to temp locally first.
-    Streaming copy forces hydration of online-only placeholders.
-    Then we restore timestamps so Google Photos fallback date doesn't become "today".
+    If the file is a 0-byte placeholder (not yet downloaded), waits up to
+    HYDRATION_MAX_WAIT_SECS for Drive to hydrate it before copying.
+    Raises EmptyCloudFileError if the file is still 0 bytes after the wait.
     """
     p = str(path)
     if "/Library/CloudStorage/" not in p:
         return path
 
-    import hashlib
     path_sig = hashlib.sha1(str(path).encode()).hexdigest()[:8]
     dst = Path(tempfile.gettempdir()) / "gphotos_stage" / f"{path_sig}_{path.name}"
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1386,28 +1393,54 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
     try:
         log_warn(f"[STAGE] CloudStorage file detected, staging locally: {path.name}")
 
-        # Source stats (may be non-hydrated but we still keep mtime)
         st = os.stat(path)
         src_size = st.st_size
         log_warn(f"[STAGE] Source size (stat): {src_size} bytes")
 
-        # ✅ STREAMING COPY forces download/hydration
-        with open(path, "rb") as src, open(dst, "wb") as out:
-            shutil.copyfileobj(src, out, length=1024 * 1024)  # 1MB chunks
+        # If 0 bytes, trigger download and wait for Drive to hydrate the file
+        if src_size == 0:
+            log_warn(f"[STAGE] File is placeholder (0 bytes), waiting up to {HYDRATION_MAX_WAIT_SECS}s for Drive to download...")
+            # Opening the file triggers Google Drive to start the download
+            try:
+                with open(path, 'rb') as f:
+                    f.read(1)
+            except Exception:
+                pass
 
-        # Verify copy
+            waited = 0
+            while waited < HYDRATION_MAX_WAIT_SECS:
+                if shutdown_handler.check():
+                    raise KeyboardInterrupt()
+                time.sleep(HYDRATION_POLL_SECS)
+                waited += HYDRATION_POLL_SECS
+                src_size = os.path.getsize(path)
+                if src_size > 0:
+                    log_warn(f"[STAGE] File downloaded: {format_size(src_size)} (after {waited}s)")
+                    st = os.stat(path)  # refresh for mtime
+                    break
+                if waited % 60 == 0:
+                    log_warn(f"[STAGE] Still waiting for download... {waited}s / {HYDRATION_MAX_WAIT_SECS}s")
+            else:
+                raise EmptyCloudFileError(f"File still 0 bytes after {HYDRATION_MAX_WAIT_SECS}s: empty in Google Drive")
+
+        # Streaming copy forces full download/hydration
+        with open(path, "rb") as src, open(dst, "wb") as out:
+            shutil.copyfileobj(src, out, length=1024 * 1024)
+
         dst_size = dst.stat().st_size
         log_warn(f"[STAGE] Staged size: {dst_size} bytes")
 
         if dst_size == 0:
-            raise IOError("Staged file is empty (0 bytes). Cloud file likely not hydrated yet.")
+            raise EmptyCloudFileError("Staged file is 0 bytes after copy: file is empty in Google Drive")
 
-        # ✅ Restore timestamps (critical for Google Photos fallback date)
+        # Restore timestamps so Google Photos uses the original date
         os.utime(dst, (st.st_atime, st.st_mtime))
 
         log_warn(f"[STAGE] Staged successfully: {dst.name}")
         return dst
 
+    except (EmptyCloudFileError, KeyboardInterrupt):
+        raise  # propagate directly, no fallback
     except Exception as e:
         log_error(f"[STAGE] Failed to stage file: {str(e)}", exc_info=True)
         log_warn("[STAGE] Falling back to original path (may timeout)")
@@ -1525,6 +1558,14 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
             # Clean up staged copy if it was created
             if local_file != file:
                 cleanup_staged_file(local_file)
+    except EmptyCloudFileError:
+        log_warn(f"[TOOSMALL] Cloud file confirmed empty after download wait: {file.name}")
+        if DRY_RUN:
+            log_warn(f"[DRY-RUN] Would move {file.name} → ../{TOOSMALL_DIR_NAME}/{folder_name}/")
+        else:
+            move_to_toosmall(file, folder_name)
+        total_failed += 1
+        return
     except KeyboardInterrupt:
         log_warn(f"[SHUTDOWN] Interrupted during upload cleanup for {file.name}")
         raise
