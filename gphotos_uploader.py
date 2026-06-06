@@ -46,25 +46,33 @@ log_init("[INIT] Script starting...")
 
 SUPPORTED_EXIF_EXT = ('.jpg', '.jpeg', '.heic', '.heif', '.cr2', '.tif', '.tiff', '.mov', '.mp4', '.nef', '.flv', '.avi', '.m4v', '.mgg', '.rw2')
 
+# Formats that produce a valid video/* MIME type but are NOT accepted by Google Photos
+GPHOTOS_UNSUPPORTED_EXTS = {'.flv', '.f4v', '.swf'}
+
 def is_supported_media(file_path: Path) -> bool:
     """Check if file is a supported Google Photos media type (image or video)
-    
+
     Tries MIME type first, then falls back to extension if MIME is unreliable.
     """
-    mime_type, _ = mimetypes.guess_type(str(file_path))
     ext = file_path.suffix.lower()
-    
+
+    # Reject formats not accepted by Google Photos even if they have a valid MIME type
+    if ext in GPHOTOS_UNSUPPORTED_EXTS:
+        return False
+
+    mime_type, _ = mimetypes.guess_type(str(file_path))
+
     # Primary: MIME type detection
     if mime_type:
         return mime_type.startswith('image/') or mime_type.startswith('video/')
-    
+
     # Fallback: extension whitelist (for cases where MIME is missing or unreliable)
     supported_exts = {
         # Images
         ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
         ".heic", ".heif", ".raw", ".cr2", ".nef", ".rw2",
         # Video
-        ".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".webm",
+        ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm",
         ".m4v", ".3gp", ".3g2", ".mts", ".m2ts", ".wm"
     }
     return ext in supported_exts
@@ -106,6 +114,31 @@ FAILED_FILE = 'failed_uploads.json'
 CHUNK_SIZE_BYTES = 32768  # 32KB read size to keep socket active
 TIMEOUT_COUNTS = {}  # per-file timeout counters for adaptive cooldown
 SAFETY_BUFFER_BYTES = 500 * 1024 * 1024  # 500 MB safety buffer
+TOOSMALL_DIR_NAME = "_TOOSMALL"
+UNSUPPORTED_DIR_NAME = "_UNSUPPORTED"
+
+def format_size(size):
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size < 1024:
+            return f"{size:.2f}{unit}"
+        size /= 1024
+    return f"{size:.2f}TB"
+
+def _move_to_dir(file: Path, folder_name: str, target_dir_name: str, tag: str):
+    dest_folder = Path(PHOTO_ROOT_DIR).parent / target_dir_name / folder_name
+    dest_folder.mkdir(parents=True, exist_ok=True)
+    dest = dest_folder / file.name
+    try:
+        shutil.move(str(file), str(dest))
+        log_warn(f"[{tag}] Moved {file.name} → {dest}")
+    except Exception as e:
+        log_error(f"[{tag}] Failed to move {file.name}: {e}")
+
+def move_to_toosmall(file: Path, folder_name: str):
+    _move_to_dir(file, folder_name, TOOSMALL_DIR_NAME, "TOOSMALL")
+
+def move_to_unsupported(file: Path, folder_name: str):
+    _move_to_dir(file, folder_name, UNSUPPORTED_DIR_NAME, "UNSUPPORTED")
 
 # === LOGGING ===
 log_init("[INIT] Setting up logging...")
@@ -385,14 +418,6 @@ async def upload_file(file_path):
 
     folder_name = Path(file_path).parent.name
     file_name = Path(file_path).name
-
-    # Convert sizes to human readable format
-    def format_size(size):
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size < 1024:
-                return f"{size:.2f}{unit}"
-            size /= 1024
-        return f"{size:.2f}TB"
 
     log_warn(f"[UPLOAD] Starting upload of {file_name}")
     # Disk space check: require file size + 500MB free
@@ -721,13 +746,13 @@ async def add_existing_media_to_album(media_item_id, album_id, folder_name):
     try:
         log_warn(f"[ALBUM] Sending request to add existing media item to album")
         log_debug("Request body:", body)
-        response = session.post("https://photoslibrary.googleapis.com/v1/albums/{albumId}:batchAddMediaItems".format(albumId=album_id), json=body)
-        
+        response = session.post("https://photoslibrary.googleapis.com/v1/albums/{albumId}:batchAddMediaItems".format(albumId=album_id), json=body, timeout=(10, 30))
+
         # Log detailed response information
         log_debug("Response status:", response.status_code)
         log_debug("Response headers:", {k: v for k, v in response.headers.items()})
         log_debug("Response content:", response.text)
-        
+
         # Handle rate limiting with exponential backoff
         if response.status_code == 429:
             retry_after = response.headers.get('Retry-After')
@@ -755,7 +780,7 @@ async def add_existing_media_to_album(media_item_id, album_id, folder_name):
                 raise KeyboardInterrupt()
             await interruptible_sleep(retry_after)
             raise Exception(f"Rate limit/RESOURCE_EXHAUSTED, retrying after {retry_after}s delay")
-        
+
         # Handle invalid album ID (400) - album was deleted or is no longer accessible
         if response.status_code == 400 and "Invalid album ID" in response.text:
             log_warn(f"[ALBUM] Album {album_id} has invalid ID, recreating for {folder_name}")
@@ -768,7 +793,7 @@ async def add_existing_media_to_album(media_item_id, album_id, folder_name):
             save_json(STATE_FILE, state)
             body['albumId'] = new_album_id
             log_debug("Retrying with new album ID")
-            response = session.post("https://photoslibrary.googleapis.com/v1/albums/{albumId}:batchAddMediaItems".format(albumId=new_album_id), json=body)
+            response = session.post("https://photoslibrary.googleapis.com/v1/albums/{albumId}:batchAddMediaItems".format(albumId=new_album_id), json=body, timeout=(10, 30))
             
         if response.status_code == 404 and "The provided ID does not match any albums" in response.text:
             # Album no longer exists, remove it from state and create a new one
@@ -793,8 +818,8 @@ async def add_existing_media_to_album(media_item_id, album_id, folder_name):
             # Retry with new album ID
             body['albumId'] = new_album_id
             log_debug("Retrying with new album ID. Request body:", body)
-            response = session.post("https://photoslibrary.googleapis.com/v1/albums/{albumId}:batchAddMediaItems".format(albumId=new_album_id), json=body)
-            
+            response = session.post("https://photoslibrary.googleapis.com/v1/albums/{albumId}:batchAddMediaItems".format(albumId=new_album_id), json=body, timeout=(10, 30))
+
         if response.status_code != 200:
             log_error(f"[ALBUM] Error response from API: {response.status_code} - {response.text}")
             log_debug("Error response body:", response.json() if response.text else None)
@@ -1070,7 +1095,7 @@ def build_datetime_from_folder_info(original_dt: datetime, folder_info: Tuple[Op
             new_dt = new_dt.replace(day=d)
         return new_dt
     except ValueError:
-        log_warn(f"❌ DISASTRO")
+        log_warn(f"[DATES] Invalid date combination from folder info {folder_info}, falling back to day=1")
         # fallback if day is invalid (e.g., February 31st)
         return original_dt.replace(
             year=y if y is not None else original_dt.year,
@@ -1152,16 +1177,32 @@ too_large_files_in_session = set()  # Track files that are too large during this
 
 async def retry_failed():
     log_warn("🔁 Modalità retry: elaborazione file falliti da failed_uploads.json...\n")
-    
+
+    # Move any previously-recorded UnsupportedFormat files to _UNSUPPORTED and clean up
+    for folder_name in list(failures.get("UnsupportedFormat", {}).keys()):
+        entry = failures["UnsupportedFormat"][folder_name]
+        folder_path = Path(entry.get("path", ""))
+        for file_name in list(entry.get("files", [])):
+            file = folder_path / file_name
+            if file.exists():
+                log_warn(f"[RETRY] Moving unsupported file to _UNSUPPORTED: {file_name}")
+                move_to_unsupported(file, folder_name)
+            failures["UnsupportedFormat"][folder_name]["files"].remove(file_name)
+        if not failures["UnsupportedFormat"][folder_name]["files"]:
+            del failures["UnsupportedFormat"][folder_name]
+    if "UnsupportedFormat" in failures and not failures["UnsupportedFormat"]:
+        del failures["UnsupportedFormat"]
+    save_json(FAILED_FILE, failures)
+
     # Build a set of files that are too large to ever retry
     too_large_files = set()
     for folder_name, entry in failures.get("TooLarge", {}).items():
         for file_name in entry.get("files", []):
             too_large_files.add(file_name)
-    
+
     if too_large_files:
         log_warn(f"[RETRY] Found {len(too_large_files)} file(s) marked as too large - these will be skipped")
-    
+
     for error_type in ["UploadError", "AddToAlbumError"]:
         log_warn(f"[RETRY] Processing {error_type} failures...")
         for folder_name in list(failures.get(error_type, {}).keys()):
@@ -1266,7 +1307,26 @@ async def retry_failed():
                 
                 # Below is only for UploadError branch; now build the path
                 file = folder_path / file_name
+
+                # Skip macOS hidden/metadata files
+                if file.name.startswith('.'):
+                    failures[error_type][folder_name]["files"].remove(file_name)
+                    if not failures[error_type][folder_name]["files"]:
+                        del failures[error_type][folder_name]
+                    save_json(FAILED_FILE, failures)
+                    continue
+
                 log_warn(f"[DEBUG] File extension: {file.suffix} (lowercase: {file.suffix.lower()})")
+                # Move 0-byte files to _TOOSMALL and remove from failures
+                if file.exists() and os.path.getsize(file) == 0:
+                    log_warn(f"[TOOSMALL] Empty file in retry: {file_name} - moving to _TOOSMALL")
+                    move_to_toosmall(file, folder_name)
+                    failures[error_type][folder_name]["files"].remove(file_name)
+                    if not failures[error_type][folder_name]["files"]:
+                        del failures[error_type][folder_name]
+                    save_json(FAILED_FILE, failures)
+                    continue
+
                 # Skip files with unsupported media types (use same check as main path)
                 if not is_supported_media(file):
                     mime_type, _ = mimetypes.guess_type(str(file))
@@ -1386,22 +1446,27 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
     # CHECK MEDIA TYPE - skip unsupported formats BEFORE upload
     if not is_supported_media(file):
         mime_type, _ = mimetypes.guess_type(str(file))
-        log_warn(f"❌ Unsupported media type: {file.name} (MIME: {mime_type or 'unknown'}) - skipping")
-        add_failure("UnsupportedFormat", folder_name, file.name, folder_path)
+        log_warn(f"❌ Unsupported media type: {file.name} (MIME: {mime_type or 'unknown'}) - moving to _UNSUPPORTED")
+        if DRY_RUN:
+            log_warn(f"[DRY-RUN] Would move {file.name} → ../{UNSUPPORTED_DIR_NAME}/{folder_name}/")
+        else:
+            move_to_unsupported(file, folder_name)
         total_failed += 1
         return
 
     # CHECK FILE SIZE BEFORE ATTEMPTING UPLOAD - avoid retry decorator
     file_size = os.path.getsize(file)
     max_size = 10 * 1024 * 1024 * 1024  # 10 GB
-    
-    def format_size(size):
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size < 1024:
-                return f"{size:.2f}{unit}"
-            size /= 1024
-        return f"{size:.2f}TB"
-    
+
+    if file_size == 0:
+        log_warn(f"[TOOSMALL] Empty file (0 bytes): {file.name}")
+        if DRY_RUN:
+            log_warn(f"[DRY-RUN] Would move {file.name} → ../{TOOSMALL_DIR_NAME}/{folder_name}/")
+        else:
+            move_to_toosmall(file, folder_name)
+        total_failed += 1
+        return
+
     if file_size > max_size:
         log_warn(f"❌ File troppo grande: {file.name} ({format_size(file_size)}) - skipping")
         too_large_files_in_session.add(file.name)
@@ -1529,6 +1594,10 @@ async def main():
                 break
             
             if file.is_file():
+                # Skip macOS hidden/metadata files (.DS_Store, ._*, etc.)
+                if file.name.startswith('.'):
+                    continue
+
                 # IMPORTANT: reload album_id in case it was repaired during a previous file
                 album_id = state.get(folder_name, {}).get("album_id")
                 if not album_id:
@@ -1561,9 +1630,4 @@ if __name__ == "__main__":
         except Exception as e:
             log_warn(f"[CLEANUP] Error closing session: {e}")
         log_warn("[SHUTDOWN] Script terminated")
-# === REPORT ===
-log_warn("\n✅ Elaborazione completata.")
-log_warn(f"📸 File caricati con successo: {total_uploaded}")
-log_warn(f"❌ File falliti: {total_failed} (vedi '{FAILED_FILE}')")
-logging.info(f"✔️ Fine script: successi={total_uploaded}, fallimenti={total_failed}")
 
