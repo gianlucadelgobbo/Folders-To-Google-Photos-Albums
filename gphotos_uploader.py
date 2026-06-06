@@ -191,7 +191,11 @@ def load_json(path, default):
 def save_json(path, data):
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-    log_warn(f"[STATE] Saved state to {path}: {len(data)} entries")
+    if path == FAILED_FILE:
+        total = sum(len(e.get('files', [])) for cat in data.values() for e in cat.values())
+        log_warn(f"[STATE] Saved {path}: {total} failed file(s) across {sum(len(c) for c in data.values())} folder(s)")
+    else:
+        log_warn(f"[STATE] Saved state to {path}: {len(data)} entries")
 
 state = load_json(STATE_FILE, {})
 # Clean up state entries that point to non-existent folders
@@ -861,9 +865,12 @@ def add_failure(error_type, folder_name, file_name, folder_path, album_id=None, 
         # For other error types, store the filename and album id if available
         if file_name not in failures[error_type][folder_name]["files"]:
             failures[error_type][folder_name]["files"].append(file_name)
+            log_warn(f"[FAILURE] Tracked {error_type}: {folder_name}/{file_name}")
+        else:
+            log_warn(f"[FAILURE] Already tracked {error_type}: {folder_name}/{file_name}")
         if album_id:
             failures[error_type][folder_name]["album_id"] = album_id
-            
+
     save_json(FAILED_FILE, failures)
 
 # === DATE FIXING ===
