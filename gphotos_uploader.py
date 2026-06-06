@@ -1453,9 +1453,10 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
 
     if file_size == 0:
         if "/Library/CloudStorage/" in str(file):
-            # Cloud placeholder not yet hydrated — add to failed_uploads for retry later
-            log_warn(f"[CLOUD] {file.name} is 0 bytes (not hydrated yet) - will retry later")
-            add_failure("UploadError", folder_name, file.name, folder_path)
+            # Size is 0 because the file is a cloud placeholder not yet downloaded.
+            # Proceed to staging: opening the file triggers macOS to hydrate it from Drive.
+            # If it's still 0 after staging, NonRetryableError stops the retry immediately.
+            log_warn(f"[CLOUD] {file.name} reports 0 bytes (placeholder) - proceeding to staging to trigger download")
         else:
             # Genuinely empty local file — move out of the way
             log_warn(f"[TOOSMALL] Empty local file (0 bytes): {file.name}")
@@ -1463,8 +1464,8 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
                 log_warn(f"[DRY-RUN] Would move {file.name} → ../{TOOSMALL_DIR_NAME}/{folder_name}/")
             else:
                 move_to_toosmall(file, folder_name)
-        total_failed += 1
-        return
+            total_failed += 1
+            return
 
     if file_size > max_size:
         log_warn(f"❌ File troppo grande: {file.name} ({format_size(file_size)}) - skipping")
