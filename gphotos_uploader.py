@@ -1421,7 +1421,8 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
                 if waited % 60 == 0:
                     log_warn(f"[STAGE] Still waiting for download... {waited}s / {HYDRATION_MAX_WAIT_SECS}s")
             else:
-                raise EmptyCloudFileError(f"File still 0 bytes after {HYDRATION_MAX_WAIT_SECS}s: empty in Google Drive")
+                # Could be a network/disk issue, not a genuinely empty file → retry later
+                raise NonRetryableError(f"File still 0 bytes after {HYDRATION_MAX_WAIT_SECS}s wait (network or disk issue?)")
 
         # Streaming copy forces full download/hydration
         with open(path, "rb") as src, open(dst, "wb") as out:
