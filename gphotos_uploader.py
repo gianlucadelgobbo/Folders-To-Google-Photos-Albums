@@ -1310,15 +1310,19 @@ async def retry_failed():
                     continue
 
                 log_warn(f"[DEBUG] File extension: {file.suffix} (lowercase: {file.suffix.lower()})")
-                # Move 0-byte files to _TOOSMALL and remove from failures
+                # Move genuinely empty LOCAL files to _TOOSMALL.
+                # Cloud files reporting 0 bytes are un-hydrated placeholders — leave them
+                # in failed_uploads and let the upload attempt trigger the download.
                 if file.exists() and os.path.getsize(file) == 0:
-                    log_warn(f"[TOOSMALL] Empty file in retry: {file_name} - moving to _TOOSMALL")
-                    move_to_toosmall(file, folder_name)
-                    failures[error_type][folder_name]["files"].remove(file_name)
-                    if not failures[error_type][folder_name]["files"]:
-                        del failures[error_type][folder_name]
-                    save_json(FAILED_FILE, failures)
-                    continue
+                    if "/Library/CloudStorage/" not in str(file):
+                        log_warn(f"[TOOSMALL] Empty local file in retry: {file_name} - moving to _TOOSMALL")
+                        move_to_toosmall(file, folder_name)
+                        failures[error_type][folder_name]["files"].remove(file_name)
+                        if not failures[error_type][folder_name]["files"]:
+                            del failures[error_type][folder_name]
+                        save_json(FAILED_FILE, failures)
+                        continue
+                    # Cloud placeholder: proceed to upload which will trigger hydration
 
                 # Skip files with unsupported media types (use same check as main path)
                 if not is_supported_media(file):
