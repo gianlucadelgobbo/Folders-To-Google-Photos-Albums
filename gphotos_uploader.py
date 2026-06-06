@@ -149,6 +149,13 @@ def move_to_toosmall(file: Path, folder_name: str):
 def move_to_unsupported(file: Path, folder_name: str):
     _move_to_dir(file, folder_name, UNSUPPORTED_DIR_NAME, "UNSUPPORTED")
 
+def _find_numbered_copy(file: Path) -> Optional[Path]:
+    """Return 'stem 2.ext' sibling if it exists and is non-empty."""
+    candidate = file.parent / f"{file.stem} 2{file.suffix}"
+    if candidate.exists() and candidate.stat().st_size > 0:
+        return candidate
+    return None
+
 # === LOGGING ===
 log_init("[INIT] Setting up logging...")
 logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -1373,33 +1380,18 @@ async def interruptible_sleep(total_seconds: int, step: float = 0.5):
         await asyncio.sleep(min(step, remaining))
         remaining -= step
 
-HYDRATION_MAX_WAIT_SECS = 600   # 10 minutes max wait for Google Drive to download
-HYDRATION_POLL_SECS = 10        # poll every 10 seconds
 
-def is_cloud_placeholder(path: Path) -> bool:
-    """Return True if the file has the cloud download icon in Finder (not yet downloaded).
-
-    Two indicators:
-    1. st_size > 0 but st_blocks == 0: Drive knows the size but nothing is on disk.
-    2. st_size == 0: fallback to xattr — fileprovider attributes mean it's a placeholder.
-    """
-    try:
-        st = os.stat(path)
-        if st.st_size > 0 and st.st_blocks == 0:
-            return True
-        if st.st_size == 0:
-            result = subprocess.run(['xattr', str(path)], capture_output=True, text=True, timeout=5)
-            return 'fileprovider' in result.stdout.lower()
-        return False
-    except Exception:
-        return False
 
 def stage_local_copy_if_cloud(path: Path) -> Path:
     """
-    If file is on Google Drive CloudStorage, copy to temp locally first.
-    If the file is a 0-byte placeholder (not yet downloaded), waits up to
-    HYDRATION_MAX_WAIT_SECS for Drive to hydrate it before copying.
-    Raises EmptyCloudFileError if the file is still 0 bytes after the wait.
+    Copy a Google Drive CloudStorage file to a local temp path before uploading.
+
+    macOS stores Drive file metadata (including size) locally even for files that
+    haven't been downloaded yet. Therefore st_size > 0 with st_blocks == 0 means
+    "not downloaded but has content". st_size == 0 means the file is genuinely empty.
+
+    shutil.copyfileobj blocks naturally while Drive downloads the file content,
+    so no explicit polling is needed — the copy itself is the wait.
     """
     p = str(path)
     if "/Library/CloudStorage/" not in p:
@@ -1414,49 +1406,20 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
 
         st = os.stat(path)
         src_size = st.st_size
-        log_warn(f"[STAGE] Source size (stat): {src_size} bytes")
+        log_warn(f"[STAGE] Source size (stat): {format_size(src_size)}")
 
-        # If 0 bytes, trigger download and wait for Drive to hydrate the file
         if src_size == 0:
-            log_warn(f"[STAGE] File is placeholder (0 bytes), waiting up to {HYDRATION_MAX_WAIT_SECS}s for Drive to download...")
-            # Opening the file triggers Google Drive to start the download
-            try:
-                with open(path, 'rb') as f:
-                    f.read(1)
-            except Exception:
-                pass
+            raise EmptyCloudFileError(f"File is 0 bytes in Drive (no cloud icon): {path.name}")
 
-            waited = 0
-            while waited < HYDRATION_MAX_WAIT_SECS:
-                if shutdown_handler.check():
-                    raise KeyboardInterrupt()
-                time.sleep(HYDRATION_POLL_SECS)
-                waited += HYDRATION_POLL_SECS
-                src_size = os.path.getsize(path)
-                if src_size > 0:
-                    log_warn(f"[STAGE] File downloaded: {format_size(src_size)} (after {waited}s)")
-                    st = os.stat(path)  # refresh for mtime
-                    break
-                if waited % 60 == 0:
-                    log_warn(f"[STAGE] Still waiting for download... {waited}s / {HYDRATION_MAX_WAIT_SECS}s")
-            else:
-                # Could be a network/disk issue, not a genuinely empty file → retry later
-                raise NonRetryableError(f"File still 0 bytes after {HYDRATION_MAX_WAIT_SECS}s wait (network or disk issue?)")
-
-        # Streaming copy forces full download/hydration
+        # Streaming copy — blocks until Drive finishes downloading the file
         with open(path, "rb") as src, open(dst, "wb") as out:
             shutil.copyfileobj(src, out, length=1024 * 1024)
 
         dst_size = dst.stat().st_size
-        log_warn(f"[STAGE] Staged size: {dst_size} bytes")
+        log_warn(f"[STAGE] Staged size: {format_size(dst_size)}")
 
         if dst_size == 0:
-            if is_cloud_placeholder(path):
-                # Still has cloud icon: download stalled or failed → retry later
-                raise NonRetryableError("Staged file is 0 bytes and still shows cloud icon: download failed")
-            else:
-                # No cloud icon after copy: file is genuinely empty in Drive → _TOOSMALL
-                raise EmptyCloudFileError("File is 0 bytes after copy and has no cloud icon: empty in Drive")
+            raise NonRetryableError("Staged file is 0 bytes after copy: download may have failed")
 
         # Restore timestamps so Google Photos uses the original date
         os.utime(dst, (st.st_atime, st.st_mtime))
@@ -1465,7 +1428,7 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
         return dst
 
     except (EmptyCloudFileError, KeyboardInterrupt):
-        raise  # no fallback: these need to reach process_file
+        raise
     except Exception as e:
         log_error(f"[STAGE] Failed to stage file: {str(e)}", exc_info=True)
         log_warn("[STAGE] Falling back to original path (may timeout)")
@@ -1521,19 +1484,23 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
     max_size = 10 * 1024 * 1024 * 1024  # 10 GB
 
     if file_size == 0:
-        if "/Library/CloudStorage/" in str(file) and is_cloud_placeholder(file):
-            # Has cloud icon in Finder: content exists on Drive but hasn't been downloaded.
-            # Proceed to staging which will wait for the download.
-            log_warn(f"[CLOUD] {file.name} is a cloud placeholder (not downloaded yet) - proceeding to staging")
+        # On macOS, Google Drive always exposes the real file size in stat() even for
+        # files not yet downloaded. So 0 bytes always means the file is genuinely empty.
+        numbered_copy = _find_numbered_copy(file)
+        if numbered_copy:
+            log_warn(f"[TOOSMALL] Empty file with numbered copy present ({numbered_copy.name}), deleting: {file.name}")
+            if DRY_RUN:
+                log_warn(f"[DRY-RUN] Would delete {file.name}")
+            else:
+                file.unlink()
         else:
-            # No cloud icon and 0 bytes: file is genuinely empty → move to _TOOSMALL
-            log_warn(f"[TOOSMALL] Empty file (0 bytes, no cloud icon): {file.name}")
+            log_warn(f"[TOOSMALL] Empty file (0 bytes): {file.name}")
             if DRY_RUN:
                 log_warn(f"[DRY-RUN] Would move {file.name} → ../{TOOSMALL_DIR_NAME}/{folder_name}/")
             else:
                 move_to_toosmall(file, folder_name)
-            total_failed += 1
-            return
+        total_failed += 1
+        return
 
     if file_size > max_size:
         log_warn(f"❌ File troppo grande: {file.name} ({format_size(file_size)}) - skipping")
