@@ -50,6 +50,7 @@ SCOPES = [
 ]
 CREDENTIALS_FILE = 'credentials.json'
 TOKEN_FILE = 'token.json'
+STATE_FILE = 'upload_state.json'
 FAILED_FILE = 'failed_uploads.json'
 GPHOTOS_UNSUPPORTED_EXTS = {'.flv', '.f4v', '.swf'}
 TOOSMALL_DIR_NAME = '_TOOSMALL'
@@ -186,16 +187,24 @@ session: Optional[AuthorizedSession] = None
 _album_cache: Dict[str, str] = {}
 
 
+def _validate_album_id(album_id: str) -> bool:
+    r = session.get(
+        f'https://photoslibrary.googleapis.com/v1/albums/{album_id}',
+        timeout=(10, 30),
+    )
+    return r.status_code == 200
+
+
 def _search_album_by_name(title: str) -> Optional[str]:
     """Paginate the full album list and return the album id matching title, or None."""
     page_token = None
     while True:
-        url = 'https://photoslibrary.googleapis.com/v1/albums'
+        params = {'pageSize': 50}
         if page_token:
-            url += f'?pageToken={page_token}'
-        r = session.get(url, timeout=(10, 30))
+            params['pageToken'] = page_token
+        r = session.get('https://photoslibrary.googleapis.com/v1/albums', params=params, timeout=(10, 30))
         if r.status_code != 200:
-            err(f'[API] Error listing albums: {r.status_code}')
+            err(f'[API] Error listing albums: {r.status_code} {r.text[:200]}')
             return None
         data = r.json()
         for album in data.get('albums', []):
@@ -211,21 +220,38 @@ def _search_album_by_name(title: str) -> Optional[str]:
     return None
 
 
-def get_or_create_album(title: str) -> str:
-    if title in _album_cache:
-        return _album_cache[title]
-    album_id = _search_album_by_name(title)
+def resolve_album(folder_name: str, state: dict) -> str:
+    """Return album_id for folder_name.
+    Priority: upload_state.json (validated) → name search → create new.
+    """
+    # 1. Use upload_state.json — the exact album the main script uploaded to
+    state_album_id = state.get(folder_name, {}).get('album_id', '')
+    if state_album_id:
+        if state_album_id in _album_cache.values():  # already validated this session
+            return state_album_id
+        if _validate_album_id(state_album_id):
+            log(f'  [ALBUM] Found via state (id: {state_album_id})')
+            _album_cache[folder_name] = state_album_id
+            return state_album_id
+        log(f'  [ALBUM] State album_id is invalid, falling back to name search')
+
+    # 2. Name search across all user albums
+    if folder_name in _album_cache:
+        return _album_cache[folder_name]
+    album_id = _search_album_by_name(folder_name)
     if album_id:
+        log(f'  [ALBUM] Found by name search (id: {album_id})')
         return album_id
-    # Create
+
+    # 3. Create
     r = session.post(
         'https://photoslibrary.googleapis.com/v1/albums',
-        json={'album': {'title': title[:100]}}, timeout=(10, 30),
+        json={'album': {'title': folder_name[:100]}}, timeout=(10, 30),
     )
     r.raise_for_status()
     album_id = r.json()['id']
-    _album_cache[title] = album_id
-    log(f'  [ALBUM] Created: "{title}" (id: {album_id})')
+    _album_cache[folder_name] = album_id
+    log(f'  [ALBUM] Created new album (id: {album_id})')
     return album_id
 
 
@@ -233,6 +259,7 @@ def list_album_contents(album_id: str) -> Dict[str, str]:
     """Return {filename_lower: mediaItemId} for all items in the album."""
     items: Dict[str, str] = {}
     page_token = None
+    page_num = 0
     while True:
         body: dict = {'albumId': album_id, 'pageSize': 100}
         if page_token:
@@ -242,14 +269,17 @@ def list_album_contents(album_id: str) -> Dict[str, str]:
             json=body, timeout=(10, 60),
         )
         if r.status_code != 200:
-            err(f'[API] Error listing album {album_id}: {r.status_code} {r.text[:200]}')
+            err(f'  [API] Error listing album contents (page {page_num}): {r.status_code} {r.text[:300]}')
             break
         data = r.json()
-        for item in data.get('mediaItems', []):
+        batch = data.get('mediaItems', [])
+        for item in batch:
             fn = item.get('filename', '')
             mid = item.get('id', '')
             if fn and mid:
                 items[fn.lower()] = mid
+        page_num += 1
+        log(f'  [API] Page {page_num}: {len(batch)} items (total so far: {len(items)})')
         page_token = data.get('nextPageToken')
         if not page_token:
             break
@@ -310,12 +340,12 @@ async def add_upload_to_album(upload_token: str, album_id: str, file_name: str):
 
 # === FOLDER PROCESSING ===
 
-async def process_folder(folder_path: Path):
+async def process_folder(folder_path: Path, state: dict):
     folder_name = folder_path.name
     log(f'\n{"=" * 80}')
     log(f'[FOLDER] {folder_name}')
 
-    # Collect local supported files (skip hidden)
+    # Collect local files (skip hidden)
     local_files = [
         f for f in folder_path.iterdir()
         if f.is_file() and not f.name.startswith('.')
@@ -324,11 +354,11 @@ async def process_folder(folder_path: Path):
         log('  (no files)')
         return
 
-    # Get or create the Google Photos album
+    # Resolve album: state → name search → create
     try:
-        album_id = get_or_create_album(folder_name)
+        album_id = resolve_album(folder_name, state)
     except Exception as e:
-        err(f'  [ALBUM] Failed to get/create album: {e}')
+        err(f'  [ALBUM] Failed to resolve/create album: {e}')
         return
 
     # List current album contents: filename_lower → mediaItemId
@@ -397,11 +427,14 @@ async def main():
         err(f'[ERROR] Path not found: {PHOTO_ROOT_DIR}')
         sys.exit(1)
 
+    state = load_json(STATE_FILE, {})
+    log(f'[INIT] Loaded upload_state.json ({len(state)} entries)')
+
     folders = sorted(f for f in root.iterdir() if f.is_dir())
     log(f'[INIT] {len(folders)} folder(s) to process under {root}')
 
     for folder in folders:
-        await process_folder(folder)
+        await process_folder(folder, state)
 
     log('\n[DONE] Verification complete.')
 
