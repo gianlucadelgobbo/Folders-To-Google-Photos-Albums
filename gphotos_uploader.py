@@ -163,15 +163,13 @@ logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format='%(asctime)s -
 def log_warn(msg):
     print(msg, flush=True)
     logging.warning(msg)
-    sys.stdout.flush()
-    
+
 def log_error(msg, exc_info=False):
     print(msg, file=sys.stderr, flush=True)
     if exc_info:
         logging.error(msg, exc_info=True)
     else:
         logging.error(msg)
-    sys.stderr.flush()
 
 def log_debug(msg, data=None):
     if DEBUG_MODE:
@@ -226,6 +224,7 @@ failures = load_json(FAILED_FILE, {
 })
 # Cache for albums and folders
 album_cache = {}
+_session_valid_albums: set = set()  # album IDs confirmed valid in this session — skip re-validation
 
 # === AUTH ===
 def _scopes_ok(creds, required_scopes):
@@ -349,6 +348,7 @@ def create_album(title):
             log_error(f"[ALBUM] Error creating album: {response.status_code} - {response.text}")
             raise Exception(f"Errore creazione album: {response.text}")
         album_id = response.json()["id"]
+        _session_valid_albums.add(album_id)
         log_warn(f"[ALBUM] Successfully created album: {title} (id: {album_id})")
         return album_id
     except Exception as e:
@@ -359,24 +359,24 @@ def create_album(title):
 def search_album_by_name(title):
     global album_cache
     
-    # 1. First check upload_state.json - but VALIDATE the ID
+    # 1. First check upload_state.json — validate once per session, then trust
     if title in state:
         album_id = state[title].get('album_id')
-        if album_id and is_album_id_valid(album_id):
-            log_warn(f"[ALBUM] Found album '{title}' in upload_state.json (id: {album_id})")
-            return album_id
-        elif album_id:
+        if album_id:
+            if album_id in _session_valid_albums:
+                return album_id
+            if is_album_id_valid(album_id):
+                _session_valid_albums.add(album_id)
+                log_warn(f"[ALBUM] Found album '{title}' in upload_state.json (id: {album_id})")
+                return album_id
             log_warn(f"[ALBUM] Album id in state is invalid for '{title}': {album_id} (will re-search/create)")
-    
-    # 2. Then check cache
+
+    # 2. Then check cache — populated from the API this session, no re-validation needed
     if title in album_cache:
         album_id = album_cache[title]
-        if is_album_id_valid(album_id):
-            log_warn(f"[ALBUM] Found album '{title}' in cache (id: {album_id})")
-            return album_id
-        else:
-            log_warn(f"[ALBUM] Album id in cache is invalid for '{title}', removing from cache")
-            del album_cache[title]
+        _session_valid_albums.add(album_id)
+        log_warn(f"[ALBUM] Found album '{title}' in cache (id: {album_id})")
+        return album_id
     
     # 3. If not found, create cache and search
     log_warn(f"[ALBUM] Building album cache...")
@@ -401,6 +401,7 @@ def search_album_by_name(title):
                 album_id = album.get('id')
                 if album_title and album_id:
                     album_cache[album_title] = album_id
+                    _session_valid_albums.add(album_id)
                     if album_title == title:
                         log_warn(f"[ALBUM] Found existing album: {title} (id: {album_id})")
                         return album_id
@@ -561,10 +562,9 @@ async def upload_file(file_path):
                 
                 log_warn(f"[UPLOAD] Successfully uploaded {file_name}")
                 TIMEOUT_COUNTS.pop(str(file_path), None)  # reset on success
-                # Add delay after successful upload to avoid quota issues
                 if shutdown_handler.check():
                     raise KeyboardInterrupt()
-                await interruptible_sleep(30)  # 30 second delay between uploads
+                await interruptible_sleep(1)  # brief pause between uploads; 429 handler manages quota
                 log_debug("Upload token:", upload_token)
                 return upload_token
                 
@@ -1329,19 +1329,19 @@ async def retry_failed():
                     continue
 
                 log_warn(f"[DEBUG] File extension: {file.suffix} (lowercase: {file.suffix.lower()})")
-                # Move genuinely empty LOCAL files to _TOOSMALL.
-                # Cloud files reporting 0 bytes are un-hydrated placeholders — leave them
-                # in failed_uploads and let the upload attempt trigger the download.
                 if file.exists() and os.path.getsize(file) == 0:
-                    if "/Library/CloudStorage/" not in str(file):
-                        log_warn(f"[TOOSMALL] Empty local file in retry: {file_name} - moving to _TOOSMALL")
+                    numbered_copy = _find_numbered_copy(file)
+                    if numbered_copy:
+                        log_warn(f"[TOOSMALL] Empty file with numbered copy present ({numbered_copy.name}), deleting: {file_name}")
+                        file.unlink()
+                    else:
+                        log_warn(f"[TOOSMALL] Empty file in retry: {file_name} - moving to _TOOSMALL")
                         move_to_toosmall(file, folder_name)
-                        failures[error_type][folder_name]["files"].remove(file_name)
-                        if not failures[error_type][folder_name]["files"]:
-                            del failures[error_type][folder_name]
-                        save_json(FAILED_FILE, failures)
-                        continue
-                    # Cloud placeholder: proceed to upload which will trigger hydration
+                    failures[error_type][folder_name]["files"].remove(file_name)
+                    if not failures[error_type][folder_name]["files"]:
+                        del failures[error_type][folder_name]
+                    save_json(FAILED_FILE, failures)
+                    continue
 
                 # Skip files with unsupported media types (use same check as main path)
                 if not is_supported_media(file):
@@ -1354,10 +1354,22 @@ async def retry_failed():
                     continue
 
                 try:
-                    upload_token = await upload_file(str(file))
+                    local_file = stage_local_copy_if_cloud(file)
+                    try:
+                        upload_token = await upload_file(str(local_file))
+                    finally:
+                        if local_file != file:
+                            cleanup_staged_file(local_file)
                     photo_id, effective_album_id = await add_to_album(upload_token, album_id, file.name, folder_name)
                     state[folder_name]['album_id'] = effective_album_id
                     log_warn(f"✅ Successfully retried file: {file_name}")
+                    failures[error_type][folder_name]["files"].remove(file_name)
+                    if not failures[error_type][folder_name]["files"]:
+                        del failures[error_type][folder_name]
+                    save_json(FAILED_FILE, failures)
+                except EmptyCloudFileError:
+                    log_warn(f"[TOOSMALL] Empty cloud file in retry: {file_name} - moving to _TOOSMALL")
+                    move_to_toosmall(file, folder_name)
                     failures[error_type][folder_name]["files"].remove(file_name)
                     if not failures[error_type][folder_name]["files"]:
                         del failures[error_type][folder_name]
@@ -1652,6 +1664,7 @@ async def main():
     log_warn(f"📸 File caricati con successo: {total_uploaded}")
     log_warn(f"❌ File falliti: {total_failed} (vedi '{FAILED_FILE}')")
     logging.info(f"✔️ Fine script: successi={total_uploaded}, fallimenti={total_failed}")
+    save_json(FAILED_FILE, failures)  # always write so the file reflects the final state
 
 if __name__ == "__main__":
     try:
