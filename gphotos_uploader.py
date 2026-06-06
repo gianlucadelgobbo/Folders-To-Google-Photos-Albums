@@ -32,10 +32,13 @@ import unicodedata
 # Suppress urllib3 SSL warnings
 warnings.filterwarnings('ignore', category=Warning)
 
-# Custom retry predicate to NOT retry on KeyboardInterrupt
+class NonRetryableError(RuntimeError):
+    """Raised for deterministic failures that should not be retried."""
+    pass
+
+# Custom retry predicate to NOT retry on KeyboardInterrupt or NonRetryableError
 def retry_if_not_keyboard_interrupt(exception):
-    """Return True unless exception is KeyboardInterrupt."""
-    if isinstance(exception, KeyboardInterrupt):
+    if isinstance(exception, (KeyboardInterrupt, NonRetryableError)):
         raise exception
     return True
 
@@ -401,20 +404,10 @@ def search_album_by_name(title):
 @retry(wait=wait_exponential(multiplier=2, min=5, max=300), stop=stop_after_attempt(7), retry=retry_if_exception(retry_if_not_keyboard_interrupt))
 async def upload_file(file_path):
     file_size = os.path.getsize(file_path)
-    # 🚨 HARD STOP: empty staged file → DO NOT RETRY
     if file_size == 0:
         error_msg = "Empty staged file (0 bytes). Cloud hydration failed."
         log_error(f"[UPLOAD] {error_msg}")
-
-        # Mark as permanent failure
-        add_failure(
-            "UploadError",
-            folder_name=Path(file_path).parent.name,
-            file_name=Path(file_path).name,
-            folder_path=Path(file_path).parent
-        )
-
-        raise RuntimeError(error_msg)
+        raise NonRetryableError(error_msg)
     max_size = 10 * 1024 * 1024 * 1024  # 10 GB
 
     folder_name = Path(file_path).parent.name
@@ -1459,11 +1452,17 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
     max_size = 10 * 1024 * 1024 * 1024  # 10 GB
 
     if file_size == 0:
-        log_warn(f"[TOOSMALL] Empty file (0 bytes): {file.name}")
-        if DRY_RUN:
-            log_warn(f"[DRY-RUN] Would move {file.name} → ../{TOOSMALL_DIR_NAME}/{folder_name}/")
+        if "/Library/CloudStorage/" in str(file):
+            # Cloud placeholder not yet hydrated — add to failed_uploads for retry later
+            log_warn(f"[CLOUD] {file.name} is 0 bytes (not hydrated yet) - will retry later")
+            add_failure("UploadError", folder_name, file.name, folder_path)
         else:
-            move_to_toosmall(file, folder_name)
+            # Genuinely empty local file — move out of the way
+            log_warn(f"[TOOSMALL] Empty local file (0 bytes): {file.name}")
+            if DRY_RUN:
+                log_warn(f"[DRY-RUN] Would move {file.name} → ../{TOOSMALL_DIR_NAME}/{folder_name}/")
+            else:
+                move_to_toosmall(file, folder_name)
         total_failed += 1
         return
 
