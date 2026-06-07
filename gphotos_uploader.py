@@ -105,7 +105,7 @@ except Exception as e:
 
 PHOTO_ROOT_DIR = args.path
 RETRY_FAILED = args.retry_failed
-FIX_DATES = True
+FIX_DATES = args.fix_dates
 DRY_RUN = args.dry_run
 DEBUG_MODE = args.debug
 
