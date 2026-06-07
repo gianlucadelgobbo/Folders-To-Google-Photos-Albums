@@ -90,7 +90,8 @@ def move(file: Path, target_dir_name: str, tag: str, reason: str):
 if DRY_RUN:
     print('[DRY-RUN] No files will be moved.\n')
 
-folders = sorted(f for f in ROOT.iterdir() if f.is_dir() and not f.name.startswith('_'))
+TRIAGE_DIRS = {'_UNSUPPORTED', '_TOOSMALL', '_TOOLARGE'}
+folders = sorted(f for f in ROOT.iterdir() if f.is_dir() and f.name not in TRIAGE_DIRS)
 total = {'unsupported': 0, 'empty': 0, 'deleted': 0, 'toolarge': 0, 'skipped': 0}
 
 for folder in folders:
