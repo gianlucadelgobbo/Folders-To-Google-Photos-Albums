@@ -112,8 +112,9 @@ for folder in folders:
             continue
 
         if not is_media(file):
-            if VERBOSE:
-                print(f'  [SKIP] {file.name} (not media)')
+            if not any(folder_total.values()):
+                print(f'\n[FOLDER] {folder.name}')
+            print(f'  [SKIP] {file.name}  ext={ext or "(none)"}')
             total['skipped'] += 1
             continue
 
