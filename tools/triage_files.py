@@ -57,6 +57,17 @@ def fmt_size(size: int) -> str:
     return f'{size:.1f} TB'
 
 
+def has_non_empty_duplicate(file: Path) -> bool:
+    """Return True if a numbered variant (e.g. 'DSCN2927 2.jpg') exists with size > 0."""
+    stem = file.stem   # e.g. 'DSCN2927'
+    ext = file.suffix  # e.g. '.jpg'
+    for n in range(2, 20):
+        candidate = file.parent / f'{stem} {n}{ext}'
+        if candidate.exists() and candidate.stat().st_size > 0:
+            return True
+    return False
+
+
 def move(file: Path, target_dir_name: str, tag: str, reason: str):
     dest_folder = ROOT / target_dir_name / file.parent.name
     dest = dest_folder / file.name
@@ -78,7 +89,7 @@ if DRY_RUN:
     print('[DRY-RUN] No files will be moved.\n')
 
 folders = sorted(f for f in ROOT.iterdir() if f.is_dir() and not f.name.startswith('_'))
-total = {'unsupported': 0, 'empty': 0, 'toolarge': 0, 'skipped': 0}
+total = {'unsupported': 0, 'empty': 0, 'deleted': 0, 'toolarge': 0, 'skipped': 0}
 
 for folder in folders:
     files = sorted(f for f in folder.iterdir() if f.is_file() and not f.name.startswith('.'))
@@ -107,9 +118,16 @@ for folder in folders:
         if size == 0:
             if not any(folder_total.values()):
                 print(f'\n[FOLDER] {folder.name}')
-            move(file, '_TOOSMALL', 'EMPTY', 'empty file (0 bytes)')
-            folder_total['empty'] += 1
-            total['empty'] += 1
+            if has_non_empty_duplicate(file):
+                print(f'  [DELETE] duplicate ghost (0 bytes, numbered copy exists)')
+                print(f'    FILE  {file}')
+                if not DRY_RUN:
+                    file.unlink()
+                total['deleted'] += 1
+            else:
+                move(file, '_TOOSMALL', 'EMPTY', 'empty file (0 bytes)')
+                folder_total['empty'] += 1
+                total['empty'] += 1
             continue
 
         if size > MAX_SIZE_BYTES:
@@ -120,4 +138,4 @@ for folder in folders:
             total['toolarge'] += 1
             continue
 
-print(f'\n[DONE] unsupported={total["unsupported"]}  empty={total["empty"]}  toolarge={total["toolarge"]}  skipped(non-media)={total["skipped"]}')
+print(f'\n[DONE] unsupported={total["unsupported"]}  empty={total["empty"]}  deleted={total["deleted"]}  toolarge={total["toolarge"]}  skipped(non-media)={total["skipped"]}')
