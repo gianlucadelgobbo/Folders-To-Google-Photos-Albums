@@ -48,7 +48,8 @@ for src in files:
 
     if dest_file.exists() and dest_file.stat().st_size > 0:
         print(f'  [SKIP] già in LPM: {folder_name}/{dest_file.name}')
-        src.unlink()
+        if not DRY_RUN:
+            src.unlink()
         total_skip += 1
         continue
 
@@ -56,7 +57,7 @@ for src in files:
     print(f'    TO  {dest_file}')
 
     if DRY_RUN:
-        print(f'    → DRY-RUN')
+        print(f'    → DRY-RUN: non convertito')
         continue
 
     tmp = src.with_suffix('.mp4')
