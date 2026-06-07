@@ -90,8 +90,8 @@ def move(file: Path, target_dir_name: str, tag: str, reason: str):
 if DRY_RUN:
     print('[DRY-RUN] No files will be moved.\n')
 
-folders = sorted(f for f in ROOT.iterdir() if f.is_dir() and f.name not in {'_UNSUPPORTED', '_TOOSMALL', '_TOOLARGE'})
-total = {'unsupported': 0, 'empty': 0, 'deleted': 0, 'toolarge': 0, 'skipped': 0}
+folders = sorted(f for f in ROOT.iterdir() if f.is_dir() and f.name not in {'_UNSUPPORTED', '_TOOSMALL', '_TOOLARGE', '_NONMEDIA'})
+total = {'unsupported': 0, 'empty': 0, 'deleted': 0, 'toolarge': 0, 'nonmedia': 0}
 
 for folder in folders:
     files = sorted(f for f in folder.iterdir() if f.is_file() and not f.name.startswith('.'))
@@ -114,8 +114,9 @@ for folder in folders:
         if not is_media(file):
             if not any(folder_total.values()):
                 print(f'\n[FOLDER] {folder.name}')
-            print(f'  [SKIP] {file.name}  ext={ext or "(none)"}')
-            total['skipped'] += 1
+            move(file, '_NONMEDIA', 'NONMEDIA', f'not a media file ({ext or "no ext"})')
+            folder_total['nonmedia'] = folder_total.get('nonmedia', 0) + 1
+            total['nonmedia'] += 1
             continue
 
         if VERBOSE:
@@ -151,4 +152,4 @@ for folder in folders:
             total['toolarge'] += 1
             continue
 
-print(f'\n[DONE] unsupported={total["unsupported"]}  empty={total["empty"]}  deleted={total["deleted"]}  toolarge={total["toolarge"]}  skipped(non-media)={total["skipped"]}')
+print(f'\n[DONE] unsupported={total["unsupported"]}  empty={total["empty"]}  deleted={total["deleted"]}  toolarge={total["toolarge"]}  nonmedia={total["nonmedia"]}')
