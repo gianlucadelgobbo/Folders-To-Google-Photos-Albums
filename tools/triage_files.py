@@ -22,7 +22,7 @@ MAX_SIZE_BYTES = 10 * 1024 ** 3  # 10 GB
 
 SUPPORTED_MEDIA_EXTS = {
     '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp',
-    '.heic', '.heif', '.raw', '.cr2', '.nef', '.rw2', '.tif', '.tiff',
+    '.heic', '.heif', '.raw', '.cr2', '.nef', '.rw2', '.orf', '.tif', '.tiff',
     '.mp4', '.mov', '.avi', '.mkv', '.wmv', '.webm',
     '.m4v', '.3gp', '.3g2', '.mts', '.m2ts', '.wm',
     '.flv', '.f4v', '.swf',  # included so they get caught as unsupported
