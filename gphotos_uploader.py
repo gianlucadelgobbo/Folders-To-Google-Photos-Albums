@@ -1325,6 +1325,15 @@ async def retry_failed():
                 # Below is only for UploadError branch; now build the path
                 file = folder_path / file_name
 
+                # Already in upload_state → remove from failed and skip
+                if file_name in set(state.get(folder_name, {}).get('files', [])):
+                    log_warn(f"[RETRY] ⏭️  Already uploaded, removing from failed: {file_name}")
+                    failures[error_type][folder_name]["files"].remove(file_name)
+                    if not failures[error_type][folder_name]["files"]:
+                        del failures[error_type][folder_name]
+                    save_json(FAILED_FILE, failures)
+                    continue
+
                 # Skip macOS hidden/metadata files
                 if file.name.startswith('.'):
                     failures[error_type][folder_name]["files"].remove(file_name)
