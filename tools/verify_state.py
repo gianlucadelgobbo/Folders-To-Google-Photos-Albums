@@ -164,8 +164,18 @@ for folder in folders:
                 if file.name not in existing:
                     failures['UploadError'][folder_name]['files'].append(file.name)
 
+already_in_failed = sum(
+    len(info.get('files', []))
+    for info in failures.get('UploadError', {}).values()
+)
+
 if not DRY_RUN and total_missing > 0:
     save_json(FAILED_FILE, failures)
     log(f'\n[SAVED] failed_uploads.json updated')
+
+if DRY_RUN:
+    log(f'\n[DRY-RUN] Would add {total_missing} file(s) to failed_uploads.json (UploadError)')
+    log(f'          Already in failed_uploads.json (UploadError): {already_in_failed}')
+    log(f'          Total after update would be: {already_in_failed + total_missing}')
 
 log(f'\n[DONE] ok={total_ok}  missing={total_missing}  skipped(triage/nonmedia)={total_skipped}')
