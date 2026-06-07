@@ -3,18 +3,7 @@
 Check every local file against Google Photos and repair discrepancies.
 
 Usage (run from project root):
-    python3 tools/verify_state.py --path /path/to/photos [--dry-run]
-
-For each local file in each subfolder of --path:
-  1. Check if the file exists anywhere in Google Photos (via galbum_cache.json).
-     Note: the Google Photos API does not support filename search, so the cache
-     is the only way to do a global "does this file exist" lookup.
-  2a. File IS in Google Photos → skip.
-  2b. File is NOT in Google Photos:
-        → unsupported format (.flv / .f4v / .swf)  → move to _UNSUPPORTED
-        → empty file (0 bytes)                      → move to _TOOSMALL
-        → otherwise                                 → upload and add to album
-        → upload failure                            → track in failed_uploads.json
+    python3 tools/verify_state.py --path /path/to/photos [--dry-run] [--refresh-cache]
 """
 
 import argparse
@@ -59,10 +48,12 @@ UNSUPPORTED_DIR_NAME = '_UNSUPPORTED'
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('--path', type=str, required=True, help='Root photos folder to check')
 parser.add_argument('--dry-run', action='store_true', help='Show what would be done without making any changes')
+parser.add_argument('--refresh-cache', action='store_true', help='Force re-fetching all metadata from Google Photos API')
 args = parser.parse_args()
 
 PHOTO_ROOT_DIR = args.path
 DRY_RUN = args.dry_run
+REFRESH_CACHE = args.refresh_cache
 
 # === LOGGING ===
 def log(msg): print(msg, flush=True)
@@ -104,7 +95,8 @@ def is_supported_media(file_path: Path) -> bool:
 
 # === MOVE HELPERS ===
 def _move_to_dir(file: Path, folder_name: str, target: str, tag: str):
-    dest_folder = Path(PHOTO_ROOT_DIR).parent / target / folder_name
+    # Fixed: Keeping cleanup directories nested inside PHOTO_ROOT_DIR to avoid relative path escapes
+    dest_folder = Path(PHOTO_ROOT_DIR) / target / folder_name
     dest_folder.mkdir(parents=True, exist_ok=True)
     dest = dest_folder / file.name
     try:
@@ -137,21 +129,31 @@ def add_failure(error_type: str, folder_name: str, file_name: str, folder_path: 
     if not DRY_RUN:
         save_json(FAILED_FILE, failures)
 
-# === GLOBAL FILENAME INDEX (built from API at startup) ===
+# === GLOBAL FILENAME INDEX ===
 def build_global_index():
-    """Fetch all albums and their media items from the API.
+    """Load index from cache, or fetch from API if missing/forced."""
+    album_map: Dict[str, str] = {}
+    global_filenames: Set[str] = set()
 
-    Returns:
-        global_filenames: set of filename.lower() for every file in Google Photos
-        album_map: dict title → album_id
-    The Google Photos API has no filename search endpoint, so we enumerate
-    all albums and all their contents to build the index.
-    """
-    log('[INDEX] Fetching all albums from Google Photos API...')
+    if not REFRESH_CACHE and os.path.exists(ALBUM_CACHE_FILE):
+        log('[INDEX] Loading global index from local cache...')
+        cache_data = load_json(ALBUM_CACHE_FILE, {})
+        cache_albums = cache_data.get('albums', {})
+        for album_id, data in cache_albums.items():
+            title = data.get('title', '')
+            if title:
+                album_map[title] = album_id
+            for photo in data.get('photos', []):
+                fn = photo.get('filename', '')
+                if fn:
+                    global_filenames.add(fn.lower())
+        log(f'[INDEX] Loaded {len(global_filenames)} items across {len(album_map)} albums from cache.')
+        return global_filenames, album_map
 
-    # Step 1: fetch all albums → build both id→title and title→id maps
+    log('[INDEX] Cache missing or --refresh-cache passed. Fetching from Google Photos API...')
+
+    # Step 1: fetch all albums
     id_to_title: Dict[str, str] = {}
-    album_map: Dict[str, str] = {}  # title → album_id
     page_token = None
     while True:
         params = {'pageSize': 50}
@@ -174,8 +176,7 @@ def build_global_index():
     log(f'[INDEX] {len(album_map)} album(s) found')
 
     # Step 2: for each album, fetch all media items
-    global_filenames: Set[str] = set()
-    cache_albums: Dict[str, dict] = {}  # album_id → {title, photos:[{filename, id}]}
+    cache_albums: Dict[str, dict] = {}
     for i, (album_id, title) in enumerate(id_to_title.items(), 1):
         log(f'[INDEX] [{i}/{len(id_to_title)}] Listing "{title}"...')
         page_token = None
@@ -204,12 +205,9 @@ def build_global_index():
         cache_albums[album_id] = {'title': title, 'photos': photos}
         log(f'  → {len(photos)} item(s)')
 
-    # Save refreshed cache to galbum_cache.json
     cache_data = {'timestamp': int(time.time()), 'albums': cache_albums}
     save_json(ALBUM_CACHE_FILE, cache_data)
     log(f'[INDEX] Cache saved to {ALBUM_CACHE_FILE}')
-
-    log(f'[INDEX] Total: {len(global_filenames)} unique filename(s) in Google Photos')
     return global_filenames, album_map
 
 # === AUTH ===
@@ -263,11 +261,8 @@ def cleanup_staged(staged: Path, original: Path):
         except Exception:
             pass
 
-# === SESSION (set in main) ===
 session: Optional[AuthorizedSession] = None
-
-# === GOOGLE PHOTOS API ===
-_album_map: Dict[str, str] = {}  # title → album_id, populated at startup by build_global_index
+_album_map: Dict[str, str] = {}
 
 def get_or_create_album(folder_name: str) -> str:
     if folder_name in _album_map:
@@ -282,7 +277,6 @@ def get_or_create_album(folder_name: str) -> str:
     _album_map[folder_name] = aid
     log(f'  [ALBUM] Created: {folder_name} (id: {aid})')
     return aid
-
 
 @retry(wait=wait_exponential(multiplier=2, min=5, max=300), stop=stop_after_attempt(7))
 async def upload_file(file_path: str) -> str:
@@ -308,7 +302,6 @@ async def upload_file(file_path: str) -> str:
         raise Exception('Empty upload token')
     return token
 
-
 async def add_to_album(upload_token: str, album_id: str, file_name: str):
     body = {
         'albumId': album_id,
@@ -326,11 +319,14 @@ async def add_to_album(upload_token: str, album_id: str, file_name: str):
             return
         raise Exception(f"batchCreate error: {status.get('message', 'unknown')}")
 
-
 # === FOLDER PROCESSING ===
-
 async def process_folder(folder_path: Path, global_filenames: Set[str], state: dict):
     folder_name = folder_path.name
+    
+    # Avoid scanning processing targets if they are inside PHOTO_ROOT_DIR
+    if folder_name in (TOOSMALL_DIR_NAME, UNSUPPORTED_DIR_NAME):
+        return
+
     log(f'\n{"=" * 80}')
     log(f'[FOLDER] {folder_name}')
 
@@ -342,16 +338,14 @@ async def process_folder(folder_path: Path, global_filenames: Set[str], state: d
         log('  (no files)')
         return
 
-    album_id: Optional[str] = None  # resolved lazily, only when needed for upload
+    album_id: Optional[str] = None
 
     for file in sorted(local_files):
-        # ── already in Google Photos ──────────────────────────────────────
         if file.name.lower() in global_filenames:
             continue
 
         log(f'\n  [MISSING] {file.name}')
 
-        # ── unsupported format ────────────────────────────────────────────
         if not is_supported_media(file):
             log(f'    → Unsupported format')
             if DRY_RUN:
@@ -360,7 +354,6 @@ async def process_folder(folder_path: Path, global_filenames: Set[str], state: d
                 move_to_unsupported(file, folder_name)
             continue
 
-        # ── empty file ────────────────────────────────────────────────────
         if file.stat().st_size == 0:
             log(f'    → Empty file (0 bytes)')
             if DRY_RUN:
@@ -369,7 +362,6 @@ async def process_folder(folder_path: Path, global_filenames: Set[str], state: d
                 move_to_toosmall(file, folder_name)
             continue
 
-        # ── upload ────────────────────────────────────────────────────────
         file_size = file.stat().st_size
         log(f'    → Not in Google Photos — uploading ({format_size(file_size)})')
         if DRY_RUN:
@@ -388,6 +380,10 @@ async def process_folder(folder_path: Path, global_filenames: Set[str], state: d
         try:
             token = await upload_file(str(staged))
             await add_to_album(token, album_id, file.name)
+            
+            # Fixed: Dynamically append to memory index to prevent reprocessing anomalies
+            global_filenames.add(file.name.lower())
+
             if folder_name not in state:
                 state[folder_name] = {'album_id': album_id, 'path': str(folder_path.resolve()), 'files': []}
             state[folder_name].setdefault('files', [])
@@ -402,9 +398,7 @@ async def process_folder(folder_path: Path, global_filenames: Set[str], state: d
         finally:
             cleanup_staged(staged, file)
 
-
 # === MAIN ===
-
 async def main():
     global session, _album_map
     log('[INIT] Authenticating with Google Photos...')
@@ -418,21 +412,19 @@ async def main():
         err(f'[ERROR] Path not found: {PHOTO_ROOT_DIR}')
         sys.exit(1)
 
-    # Build global index from API: fetches all albums + their contents
     global_filenames, _album_map = build_global_index()
 
     state = load_json(STATE_FILE, {})
     log(f'[INIT] Loaded upload_state.json ({len(state)} entries)')
 
     folders = sorted(f for f in root.iterdir() if f.is_dir())
-    log(f'[INIT] {len(folders)} folder(s) to process under {root}')
+    log(f'[INIT] {len(folders)} folder(s) to scan under {root}')
 
     for folder in folders:
         await process_folder(folder, global_filenames, state)
 
     save_json(FAILED_FILE, failures)
     log('\n[DONE] Verification complete.')
-
 
 if __name__ == '__main__':
     asyncio.run(main())
