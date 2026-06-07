@@ -1,430 +1,171 @@
 #!/usr/bin/env python3
 """
-Check every local file against Google Photos and repair discrepancies.
+Compare local folders against upload_state.json and mark missing files for retry.
 
-Usage (run from project root):
-    python3 tools/verify_state.py --path /path/to/photos [--dry-run] [--refresh-cache]
+For each local media file in each subfolder of --path:
+  - Already in upload_state.json  → OK, skip
+  - Not in upload_state.json      → add to failed_uploads.json (UploadError)
+
+Files skipped by design (handled by triage_files.py):
+  - Unsupported format (.flv .f4v .swf)
+  - Empty (0 bytes)
+  - Too large (> 10 GB)
+  - Non-media files
+
+No API calls, no OAuth needed. Run triage_files.py first, then this.
+
+Usage:
+    python3 tools/verify_state.py --path /path/to/photos [--dry-run]
 """
 
 import argparse
-import asyncio
-import hashlib
 import json
 import mimetypes
 import os
-import shutil
 import sys
-import tempfile
-import time
-import unicodedata
-import urllib.parse
-import warnings
 from pathlib import Path
-from typing import Dict, Optional, Set
 
-warnings.filterwarnings('ignore', category=Warning)
-
-from google.auth.transport.requests import AuthorizedSession, Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-# === CONFIG ===
-SCOPES = [
-    'https://www.googleapis.com/auth/photoslibrary.appendonly',
-    'https://www.googleapis.com/auth/photoslibrary.readonly',
-]
 PROJECT_ROOT = Path(__file__).parent.parent
-CREDENTIALS_FILE = str(PROJECT_ROOT / 'credentials.json')
-TOKEN_FILE = str(PROJECT_ROOT / 'token.json')
-STATE_FILE = str(PROJECT_ROOT / 'upload_state.json')
-FAILED_FILE = str(PROJECT_ROOT / 'failed_uploads.json')
-ALBUM_CACHE_FILE = str(PROJECT_ROOT / 'galbum_cache.json')
-GPHOTOS_UNSUPPORTED_EXTS = {'.flv', '.f4v', '.swf'}
-TOOSMALL_DIR_NAME = '_TOOSMALL'
-UNSUPPORTED_DIR_NAME = '_UNSUPPORTED'
+STATE_FILE   = PROJECT_ROOT / 'upload_state.json'
+FAILED_FILE  = PROJECT_ROOT / 'failed_uploads.json'
 
-# === CLI ===
+GPHOTOS_UNSUPPORTED_EXTS = {'.flv', '.f4v', '.swf'}
+MAX_SIZE_BYTES = 10 * 1024 ** 3  # 10 GB
+
+SUPPORTED_MEDIA_EXTS = {
+    '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp',
+    '.heic', '.heif', '.raw', '.cr2', '.nef', '.rw2', '.orf', '.dng', '.tif', '.tiff',
+    '.mp4', '.mov', '.avi', '.mkv', '.wmv', '.webm',
+    '.m4v', '.3gp', '.3g2', '.mts', '.m2ts', '.wm',
+}
+
+TRIAGE_DIRS = {'_UNSUPPORTED', '_TOOSMALL', '_TOOLARGE', '_NONMEDIA'}
+
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-parser.add_argument('--path', type=str, required=True, help='Root photos folder to check')
-parser.add_argument('--dry-run', action='store_true', help='Show what would be done without making any changes')
-parser.add_argument('--refresh-cache', action='store_true', help='Force re-fetching all metadata from Google Photos API')
+parser.add_argument('--path', required=True, help='Root photos folder to scan')
+parser.add_argument('--dry-run', action='store_true', help='Show what would be added without writing failed_uploads.json')
 args = parser.parse_args()
 
-PHOTO_ROOT_DIR = args.path
+ROOT    = Path(args.path)
 DRY_RUN = args.dry_run
-REFRESH_CACHE = args.refresh_cache
 
-# === LOGGING ===
-def log(msg): print(msg, flush=True)
-def err(msg): print(msg, file=sys.stderr, flush=True)
+if not ROOT.is_dir():
+    print(f'[ERROR] Not a directory: {ROOT}', file=sys.stderr)
+    sys.exit(1)
 
-# === JSON ===
+
+def log(msg):   print(msg, flush=True)
+def err(msg):   print(msg, file=sys.stderr, flush=True)
+
+
 def load_json(path, default):
     if os.path.exists(path):
         with open(path, 'r', encoding='utf-8') as f:
             return json.load(f)
     return default
 
+
 def save_json(path, data):
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-def format_size(size):
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size < 1024:
-            return f'{size:.2f}{unit}'
-        size /= 1024
-    return f'{size:.2f}TB'
 
-# === MEDIA TYPE ===
-def is_supported_media(file_path: Path) -> bool:
-    ext = file_path.suffix.lower()
+def is_uploadable(file: Path) -> bool:
+    ext = file.suffix.lower()
     if ext in GPHOTOS_UNSUPPORTED_EXTS:
         return False
-    mime_type, _ = mimetypes.guess_type(str(file_path))
-    if mime_type:
-        return mime_type.startswith('image/') or mime_type.startswith('video/')
-    supported_exts = {
-        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp',
-        '.heic', '.heif', '.raw', '.cr2', '.nef', '.rw2',
-        '.mp4', '.mov', '.avi', '.mkv', '.wmv', '.webm',
-        '.m4v', '.3gp', '.3g2', '.mts', '.m2ts', '.wm',
-    }
-    return ext in supported_exts
+    if ext in SUPPORTED_MEDIA_EXTS:
+        return True
+    mime, _ = mimetypes.guess_type(str(file))
+    return bool(mime and (mime.startswith('image/') or mime.startswith('video/')))
 
-# === MOVE HELPERS ===
-def _move_to_dir(file: Path, folder_name: str, target: str, tag: str):
-    # Fixed: Keeping cleanup directories nested inside PHOTO_ROOT_DIR to avoid relative path escapes
-    dest_folder = Path(PHOTO_ROOT_DIR) / target / folder_name
-    dest_folder.mkdir(parents=True, exist_ok=True)
-    dest = dest_folder / file.name
-    try:
-        shutil.move(str(file), str(dest))
-        log(f'  [{tag}] Moved → {dest}')
-    except Exception as e:
-        err(f'  [{tag}] Failed to move {file.name}: {e}')
 
-def move_to_toosmall(file: Path, folder_name: str):
-    _move_to_dir(file, folder_name, TOOSMALL_DIR_NAME, 'TOOSMALL')
+def fmt_size(size: int) -> str:
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size < 1024:
+            return f'{size:.1f} {unit}'
+        size /= 1024
+    return f'{size:.1f} TB'
 
-def move_to_unsupported(file: Path, folder_name: str):
-    _move_to_dir(file, folder_name, UNSUPPORTED_DIR_NAME, 'UNSUPPORTED')
 
-# === FAILURE TRACKING ===
+# Load state
+state   = load_json(STATE_FILE, {})
 failures = load_json(FAILED_FILE, {
     'UploadError': {}, 'AddToAlbumError': {}, 'TooLarge': {},
     'ExifErrors': {}, 'UnsupportedFormat': {},
 })
 
-def add_failure(error_type: str, folder_name: str, file_name: str, folder_path: Path, album_id: str = ''):
-    if error_type not in failures:
-        failures[error_type] = {}
-    if folder_name not in failures[error_type]:
-        failures[error_type][folder_name] = {'path': str(folder_path.resolve()), 'files': []}
-        if album_id:
-            failures[error_type][folder_name]['album_id'] = album_id
-    if file_name not in failures[error_type][folder_name]['files']:
-        failures[error_type][folder_name]['files'].append(file_name)
-    if not DRY_RUN:
-        save_json(FAILED_FILE, failures)
+if DRY_RUN:
+    log('[DRY-RUN] failed_uploads.json will NOT be updated.\n')
 
-# === GLOBAL FILENAME INDEX ===
-def build_global_index():
-    """Load index from cache, or fetch from API if missing/forced."""
-    album_map: Dict[str, str] = {}
-    global_filenames: Set[str] = set()
+folders = sorted(f for f in ROOT.iterdir() if f.is_dir() and f.name not in TRIAGE_DIRS)
+log(f'[INIT] Scanning {len(folders)} folder(s) in {ROOT}')
+log(f'[INIT] upload_state.json has {len(state)} folder(s)\n')
 
-    if not REFRESH_CACHE and os.path.exists(ALBUM_CACHE_FILE):
-        log('[INDEX] Loading global index from local cache...')
-        cache_data = load_json(ALBUM_CACHE_FILE, {})
-        cache_albums = cache_data.get('albums', {})
-        for album_id, data in cache_albums.items():
-            title = data.get('title', '')
-            if title:
-                album_map[title] = album_id
-            for photo in data.get('photos', []):
-                fn = photo.get('filename', '')
-                if fn:
-                    global_filenames.add(fn.lower())
-        log(f'[INDEX] Loaded {len(global_filenames)} items across {len(album_map)} albums from cache.')
-        return global_filenames, album_map
+total_ok = 0
+total_missing = 0
+total_skipped = 0
 
-    log('[INDEX] Cache missing or --refresh-cache passed. Fetching from Google Photos API...')
+for folder in folders:
+    folder_name = folder.name
+    state_info  = state.get(folder_name, {})
+    album_id    = state_info.get('album_id', '')
+    uploaded    = {f.lower() for f in state_info.get('files', [])}
 
-    # Step 1: fetch all albums
-    id_to_title: Dict[str, str] = {}
-    page_token = None
-    while True:
-        params = {'pageSize': 50}
-        if page_token:
-            params['pageToken'] = page_token
-        r = session.get('https://photoslibrary.googleapis.com/v1/albums', params=params, timeout=(10, 30))
-        if r.status_code != 200:
-            err(f'[INDEX] Error fetching albums: {r.status_code} {r.text[:200]}')
-            break
-        data = r.json()
-        for album in data.get('albums', []):
-            aid = album.get('id', '')
-            title = album.get('title', '')
-            if aid and title:
-                id_to_title[aid] = title
-                album_map[title] = aid
-        page_token = data.get('nextPageToken')
-        if not page_token:
-            break
-    log(f'[INDEX] {len(album_map)} album(s) found')
-
-    # Step 2: for each album, fetch all media items
-    cache_albums: Dict[str, dict] = {}
-    for i, (album_id, title) in enumerate(id_to_title.items(), 1):
-        log(f'[INDEX] [{i}/{len(id_to_title)}] Listing "{title}"...')
-        page_token = None
-        photos = []
-        while True:
-            body: dict = {'albumId': album_id, 'pageSize': 100}
-            if page_token:
-                body['pageToken'] = page_token
-            r = session.post(
-                'https://photoslibrary.googleapis.com/v1/mediaItems:search',
-                json=body, timeout=(10, 60),
-            )
-            if r.status_code != 200:
-                err(f'  [INDEX] Error listing "{title}": {r.status_code} {r.text[:200]}')
-                break
-            data = r.json()
-            for item in data.get('mediaItems', []):
-                fn = item.get('filename', '')
-                mid = item.get('id', '')
-                if fn:
-                    global_filenames.add(fn.lower())
-                    photos.append({'filename': fn, 'id': mid})
-            page_token = data.get('nextPageToken')
-            if not page_token:
-                break
-        cache_albums[album_id] = {'title': title, 'photos': photos}
-        log(f'  → {len(photos)} item(s)')
-
-    cache_data = {'timestamp': int(time.time()), 'albums': cache_albums}
-    save_json(ALBUM_CACHE_FILE, cache_data)
-    log(f'[INDEX] Cache saved to {ALBUM_CACHE_FILE}')
-    return global_filenames, album_map
-
-# === AUTH ===
-def _scopes_ok(creds, required_scopes):
-    granted = set(creds.scopes or [])
-    return set(required_scopes).issubset(granted)
-
-def authenticate() -> AuthorizedSession:
-    creds = None
-    if os.path.exists(TOKEN_FILE):
-        try:
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-            if creds and creds.scopes and not _scopes_ok(creds, SCOPES):
-                log('[AUTH] Token scopes insufficient, forcing re-auth')
-                creds = None
-        except Exception:
-            creds = None
-    if creds and creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(Request())
-            if creds and creds.scopes and not _scopes_ok(creds, SCOPES):
-                log('[AUTH] Token scopes insufficient after refresh, forcing re-auth')
-                creds = None
-        except Exception:
-            creds = None
-    if not creds or not creds.valid:
-        flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-        creds = flow.run_local_server(port=0, prompt='consent')
-        with open(TOKEN_FILE, 'w') as f:
-            f.write(creds.to_json())
-    log(f'[AUTH] Granted scopes: {creds.scopes}')
-    return AuthorizedSession(creds)
-
-# === CLOUD STAGING ===
-def stage_local_copy_if_cloud(path: Path) -> Path:
-    if '/Library/CloudStorage/' not in str(path):
-        return path
-    path_sig = hashlib.sha1(str(path).encode()).hexdigest()[:8]
-    dst = Path(tempfile.gettempdir()) / 'gphotos_stage' / f'{path_sig}_{path.name}'
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    st = os.stat(path)
-    with open(path, 'rb') as src, open(dst, 'wb') as out:
-        shutil.copyfileobj(src, out, length=1024 * 1024)
-    os.utime(dst, (st.st_atime, st.st_mtime))
-    return dst
-
-def cleanup_staged(staged: Path, original: Path):
-    if staged != original:
-        try:
-            staged.unlink()
-        except Exception:
-            pass
-
-session: Optional[AuthorizedSession] = None
-_album_map: Dict[str, str] = {}
-
-def get_or_create_album(folder_name: str) -> str:
-    if folder_name in _album_map:
-        return _album_map[folder_name]
-    r = session.post(
-        'https://photoslibrary.googleapis.com/v1/albums',
-        json={'album': {'title': folder_name[:100]}},
-        timeout=(10, 30),
-    )
-    r.raise_for_status()
-    aid = r.json()['id']
-    _album_map[folder_name] = aid
-    log(f'  [ALBUM] Created: {folder_name} (id: {aid})')
-    return aid
-
-@retry(wait=wait_exponential(multiplier=2, min=5, max=300), stop=stop_after_attempt(7))
-async def upload_file(file_path: str) -> str:
-    file_name = Path(file_path).name
-    file_size = os.path.getsize(file_path)
-    if file_size == 0:
-        raise Exception(f'File is 0 bytes: {file_name}')
-    headers = {
-        'Content-Type': 'application/octet-stream',
-        'X-Goog-Upload-File-Name': urllib.parse.quote(unicodedata.normalize('NFC', file_name)),
-        'X-Goog-Upload-Protocol': 'raw',
-    }
-    read_timeout = max(1200, (file_size / (1024 ** 3)) * 60 + 300)
-    with open(file_path, 'rb') as f:
-        r = session.post(
-            'https://photoslibrary.googleapis.com/v1/uploads',
-            data=f, headers=headers, timeout=(30, read_timeout),
-        )
-    if r.status_code != 200:
-        raise Exception(f'Upload failed: {r.status_code} {r.text[:200]}')
-    token = r.text.strip()
-    if not token:
-        raise Exception('Empty upload token')
-    return token
-
-async def add_to_album(upload_token: str, album_id: str, file_name: str):
-    body = {
-        'albumId': album_id,
-        'newMediaItems': [{'description': file_name, 'simpleMediaItem': {'uploadToken': upload_token}}],
-    }
-    r = session.post(
-        'https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate',
-        json=body, timeout=(10, 30),
-    )
-    if r.status_code != 200:
-        raise Exception(f'batchCreate failed: {r.status_code} {r.text[:200]}')
-    for item in r.json().get('newMediaItemResults', []):
-        status = item.get('status', {})
-        if status.get('code', -1) == 0 or status.get('message') == 'Success':
-            return
-        raise Exception(f"batchCreate error: {status.get('message', 'unknown')}")
-
-# === FOLDER PROCESSING ===
-async def process_folder(folder_path: Path, global_filenames: Set[str], state: dict):
-    folder_name = folder_path.name
-    
-    # Avoid scanning processing targets if they are inside PHOTO_ROOT_DIR
-    if folder_name in (TOOSMALL_DIR_NAME, UNSUPPORTED_DIR_NAME):
-        return
-
-    log(f'\n{"=" * 80}')
-    log(f'[FOLDER] {folder_name}')
-
-    local_files = [
-        f for f in folder_path.iterdir()
+    local_files = sorted(
+        f for f in folder.iterdir()
         if f.is_file() and not f.name.startswith('.')
-    ]
+    )
     if not local_files:
-        log('  (no files)')
-        return
+        continue
 
-    album_id: Optional[str] = None
+    folder_missing = []
 
-    for file in sorted(local_files):
-        if file.name.lower() in global_filenames:
+    for file in local_files:
+        if not is_uploadable(file):
+            total_skipped += 1
             continue
 
-        log(f'\n  [MISSING] {file.name}')
-
-        if not is_supported_media(file):
-            log(f'    → Unsupported format')
-            if DRY_RUN:
-                log(f'    [DRY-RUN] Would move to _UNSUPPORTED')
-            else:
-                move_to_unsupported(file, folder_name)
-            continue
-
-        if file.stat().st_size == 0:
-            log(f'    → Empty file (0 bytes)')
-            if DRY_RUN:
-                log(f'    [DRY-RUN] Would move to _TOOSMALL')
-            else:
-                move_to_toosmall(file, folder_name)
-            continue
-
-        file_size = file.stat().st_size
-        log(f'    → Not in Google Photos — uploading ({format_size(file_size)})')
-        if DRY_RUN:
-            log(f'    [DRY-RUN] Would upload to album "{folder_name}"')
-            continue
-
-        if album_id is None:
-            try:
-                album_id = get_or_create_album(folder_name)
-            except Exception as e:
-                err(f'  [ALBUM] Failed to create album: {e}')
-                add_failure('UploadError', folder_name, file.name, folder_path)
-                continue
-
-        staged = stage_local_copy_if_cloud(file)
         try:
-            token = await upload_file(str(staged))
-            await add_to_album(token, album_id, file.name)
-            
-            # Fixed: Dynamically append to memory index to prevent reprocessing anomalies
-            global_filenames.add(file.name.lower())
+            size = file.stat().st_size
+        except OSError:
+            total_skipped += 1
+            continue
 
-            if folder_name not in state:
-                state[folder_name] = {'album_id': album_id, 'path': str(folder_path.resolve()), 'files': []}
-            state[folder_name].setdefault('files', [])
-            if file.name not in state[folder_name]['files']:
-                state[folder_name]['files'].append(file.name)
-            state[folder_name]['album_id'] = album_id
-            save_json(STATE_FILE, state)
-            log(f'    ✅ Uploaded and added to album')
-        except Exception as e:
-            err(f'    ❌ Upload failed: {e}')
-            add_failure('UploadError', folder_name, file.name, folder_path, album_id)
-        finally:
-            cleanup_staged(staged, file)
+        if size == 0 or size > MAX_SIZE_BYTES:
+            total_skipped += 1
+            continue
 
-# === MAIN ===
-async def main():
-    global session, _album_map
-    log('[INIT] Authenticating with Google Photos...')
-    session = authenticate()
-    log('[INIT] Authenticated')
-    if DRY_RUN:
-        log('[INIT] DRY-RUN mode — no changes will be made')
+        if file.name.lower() in uploaded:
+            total_ok += 1
+            continue
 
-    root = Path(PHOTO_ROOT_DIR)
-    if not root.is_dir():
-        err(f'[ERROR] Path not found: {PHOTO_ROOT_DIR}')
-        sys.exit(1)
+        folder_missing.append(file)
+        total_missing += 1
 
-    global_filenames, _album_map = build_global_index()
+    if folder_missing:
+        log(f'[FOLDER] {folder_name}  ({len(folder_missing)} missing)')
+        for file in folder_missing:
+            size = file.stat().st_size
+            log(f'  [MISSING] {file.name}  ({fmt_size(size)})')
 
-    state = load_json(STATE_FILE, {})
-    log(f'[INIT] Loaded upload_state.json ({len(state)} entries)')
+        if not DRY_RUN:
+            if 'UploadError' not in failures:
+                failures['UploadError'] = {}
+            if folder_name not in failures['UploadError']:
+                failures['UploadError'][folder_name] = {
+                    'path': str(folder.resolve()),
+                    'files': [],
+                }
+                if album_id:
+                    failures['UploadError'][folder_name]['album_id'] = album_id
+            existing = set(failures['UploadError'][folder_name]['files'])
+            for file in folder_missing:
+                if file.name not in existing:
+                    failures['UploadError'][folder_name]['files'].append(file.name)
 
-    folders = sorted(f for f in root.iterdir() if f.is_dir())
-    log(f'[INIT] {len(folders)} folder(s) to scan under {root}')
-
-    for folder in folders:
-        await process_folder(folder, global_filenames, state)
-
+if not DRY_RUN and total_missing > 0:
     save_json(FAILED_FILE, failures)
-    log('\n[DONE] Verification complete.')
+    log(f'\n[SAVED] failed_uploads.json updated')
 
-if __name__ == '__main__':
-    asyncio.run(main())
+log(f'\n[DONE] ok={total_ok}  missing={total_missing}  skipped(triage/nonmedia)={total_skipped}')
