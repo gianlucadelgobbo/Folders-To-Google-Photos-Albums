@@ -69,15 +69,19 @@ for src in files:
                '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
                '-c:v', 'libx264', '-c:a', 'aac', str(tmp)]
 
-    result = subprocess.run(cmd, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0 and tmp.exists() and tmp.stat().st_size > 0:
         dest_folder.mkdir(parents=True, exist_ok=True)
         tmp.rename(dest_file)
         src.unlink()
-        print(f'    → OK  ({dest_file.stat().st_size // 1024} KB)')
+        print(f'    → CONVERTED OK  ({dest_file.stat().st_size // 1024} KB)')
         total_ok += 1
     else:
-        print(f'    → FAIL')
+        print(f'    → FAILED')
+        if result.stderr:
+            last = [l for l in result.stderr.splitlines() if l.strip()]
+            if last:
+                print(f'    → ffmpeg: {last[-1]}')
         if tmp.exists():
             tmp.unlink()
         total_fail += 1
