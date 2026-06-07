@@ -53,4 +53,12 @@ for folder in sorted(TOOSMALL.iterdir()):
         else:
             total_skipped += 1
 
-print(f'\n[DONE] eliminati={total_deleted}  lasciati={total_skipped}')
+total_empty = 0
+for folder in sorted(TOOSMALL.iterdir()):
+    if folder.is_dir() and not any(folder.iterdir()):
+        print(f'  [RMDIR] {folder.name}')
+        if not DRY_RUN:
+            folder.rmdir()
+        total_empty += 1
+
+print(f'\n[DONE] eliminati={total_deleted}  lasciati={total_skipped}  cartelle_vuote_rimosse={total_empty}')
