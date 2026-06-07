@@ -1255,7 +1255,12 @@ async def retry_failed():
                 
                 # item can be a filename (str) or a dict (for AddToAlbumError)
                 file_name = item.get("name") if isinstance(item, dict) else item
-                
+
+                # Skip non-uploadable files (.DS_Store, .xmp, hidden files, etc.)
+                if not is_supported_media(Path(file_name)):
+                    log_warn(f"[RETRY] ⏭️  Skipping {file_name} (not a supported media file)")
+                    continue
+
                 # Skip files that are too large - no point retrying
                 if file_name in too_large_files:
                     log_warn(f"[RETRY] ⏭️  Skipping {file_name} (file too large, will not retry)")
