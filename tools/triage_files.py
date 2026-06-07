@@ -79,12 +79,14 @@ def move(file: Path, target_dir_name: str, tag: str, reason: str):
     print(f'    TO    {dest}')
     print(f'    SIZE  {fmt_size(size)}')
     if DRY_RUN:
+        print(f'    → DRY-RUN: not moved')
         return
     dest_folder.mkdir(parents=True, exist_ok=True)
     try:
         shutil.move(str(file), str(dest))
+        print(f'    → MOVED OK')
     except Exception as e:
-        print(f'  [ERROR] Could not move {file.name}: {e}', file=sys.stderr)
+        print(f'    → ERROR: {e}', file=sys.stderr)
 
 
 if DRY_RUN:
