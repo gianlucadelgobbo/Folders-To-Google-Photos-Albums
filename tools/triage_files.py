@@ -31,10 +31,12 @@ SUPPORTED_MEDIA_EXTS = {
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('--path', required=True, help='Root photos folder to scan')
 parser.add_argument('--dry-run', action='store_true', help='Show what would happen without moving anything')
+parser.add_argument('--verbose', action='store_true', help='Print every file scanned (for debugging)')
 args = parser.parse_args()
 
 ROOT = Path(args.path)
 DRY_RUN = args.dry_run
+VERBOSE = args.verbose
 
 if not ROOT.is_dir():
     print(f'[ERROR] Not a directory: {ROOT}', file=sys.stderr)
@@ -110,10 +112,20 @@ for folder in folders:
             continue
 
         if not is_media(file):
+            if VERBOSE:
+                print(f'  [SKIP] {file.name} (not media)')
             total['skipped'] += 1
             continue
 
-        size = file.stat().st_size
+        if VERBOSE:
+            print(f'  [SCAN] {file.name}')
+
+        try:
+            size = file.stat().st_size
+        except OSError as e:
+            print(f'\n[FOLDER] {folder.name}')
+            print(f'  [WARN] Cannot stat {file.name}: {e}')
+            continue
 
         if size == 0:
             if not any(folder_total.values()):
