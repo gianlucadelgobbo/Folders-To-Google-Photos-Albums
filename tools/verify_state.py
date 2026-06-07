@@ -43,7 +43,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 # === CONFIG ===
 SCOPES = [
     'https://www.googleapis.com/auth/photoslibrary.appendonly',
-    'https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata',
+    'https://www.googleapis.com/auth/photoslibrary.readonly',
 ]
 PROJECT_ROOT = Path(__file__).parent.parent
 CREDENTIALS_FILE = str(PROJECT_ROOT / 'credentials.json')
