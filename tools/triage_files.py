@@ -49,12 +49,23 @@ def is_media(file: Path) -> bool:
     return bool(mime and (mime.startswith('image/') or mime.startswith('video/')))
 
 
-def move(file: Path, target_dir_name: str, tag: str):
+def fmt_size(size: int) -> str:
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size < 1024:
+            return f'{size:.1f} {unit}'
+        size /= 1024
+    return f'{size:.1f} TB'
+
+
+def move(file: Path, target_dir_name: str, tag: str, reason: str):
     dest_folder = ROOT / target_dir_name / file.parent.name
     dest = dest_folder / file.name
-    print(f'  [{tag}] {file.name}')
+    size = file.stat().st_size
+    print(f'  [{tag}] {reason}')
+    print(f'    FROM  {file}')
+    print(f'    TO    {dest}')
+    print(f'    SIZE  {fmt_size(size)}')
     if DRY_RUN:
-        print(f'         → (dry-run) {dest}')
         return
     dest_folder.mkdir(parents=True, exist_ok=True)
     try:
@@ -82,7 +93,7 @@ for folder in folders:
         if ext in GPHOTOS_UNSUPPORTED_EXTS:
             if not folder_total['unsupported']:
                 print(f'\n[FOLDER] {folder.name}')
-            move(file, '_UNSUPPORTED', 'UNSUPPORTED')
+            move(file, '_UNSUPPORTED', 'UNSUPPORTED', f'unsupported format ({ext})')
             folder_total['unsupported'] += 1
             total['unsupported'] += 1
             continue
@@ -96,7 +107,7 @@ for folder in folders:
         if size == 0:
             if not any(folder_total.values()):
                 print(f'\n[FOLDER] {folder.name}')
-            move(file, '_TOOSMALL', 'EMPTY')
+            move(file, '_TOOSMALL', 'EMPTY', 'empty file (0 bytes)')
             folder_total['empty'] += 1
             total['empty'] += 1
             continue
@@ -104,7 +115,7 @@ for folder in folders:
         if size > MAX_SIZE_BYTES:
             if not any(folder_total.values()):
                 print(f'\n[FOLDER] {folder.name}')
-            move(file, '_TOOLARGE', 'TOOLARGE')
+            move(file, '_TOOLARGE', 'TOOLARGE', f'too large ({fmt_size(size)} > 10 GB)')
             folder_total['toolarge'] += 1
             total['toolarge'] += 1
             continue
