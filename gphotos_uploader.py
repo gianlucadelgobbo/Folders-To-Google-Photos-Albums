@@ -1413,6 +1413,9 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
     dst = Path(tempfile.gettempdir()) / "gphotos_stage" / f"{path_sig}_{path.name}"
     dst.parent.mkdir(parents=True, exist_ok=True)
 
+    if not path.exists():
+        raise NonRetryableError(f"File not found on local filesystem (not synced from Drive): {path.name}")
+
     try:
         log_warn(f"[STAGE] CloudStorage file detected, staging locally: {path.name}")
 
