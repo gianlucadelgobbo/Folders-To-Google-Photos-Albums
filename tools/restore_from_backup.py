@@ -111,6 +111,8 @@ for folder in sorted(TOOSMALL.iterdir()):
             try:
                 shutil.copy2(str(backup_file), str(dest_file))
                 print(f'    → COPIED OK')
+                file.unlink()
+                print(f'    → 0-byte eliminato da _TOOSMALL')
                 total_restored += 1
             except Exception as e:
                 print(f'    → ERROR: {e}', file=sys.stderr)
@@ -132,6 +134,8 @@ for folder in sorted(TOOSMALL.iterdir()):
             try:
                 shutil.copy2(str(backup_file), str(dest_file))
                 print(f'    → COPIED OK')
+                file.unlink()
+                print(f'    → 0-byte eliminato da _TOOSMALL')
                 total_restored += 1
             except Exception as e:
                 print(f'    → ERROR: {e}', file=sys.stderr)
