@@ -82,9 +82,38 @@ for folder in sorted(TOOSMALL.iterdir()):
 
         if len(candidates) > 1:
             total_ambiguous += 1
-            print(f'  [AMBIGUOUS] {folder.name}/{file.name} — {len(candidates)} matches in backup:')
-            for c in candidates:
-                print(f'    {c}  ({fmt(c.stat().st_size)})')
+            print(f'\n  [AMBIGUOUS] {folder.name}/{file.name} — {len(candidates)} matches:')
+            for i, c in enumerate(candidates, 1):
+                print(f'    [{i}] {c}  ({fmt(c.stat().st_size)})')
+            print(f'    [0] Skip')
+            if DRY_RUN:
+                print(f'    → DRY-RUN: skipped')
+                continue
+            while True:
+                try:
+                    choice = input(f'  Choose [0-{len(candidates)}]: ').strip()
+                    idx = int(choice)
+                    if 0 <= idx <= len(candidates):
+                        break
+                except ValueError:
+                    pass
+                print(f'  Enter a number between 0 and {len(candidates)}')
+            if idx == 0:
+                print(f'  → Skipped')
+                continue
+            backup_file = candidates[idx - 1]
+            backup_size = backup_file.stat().st_size
+            dest_folder = DEST / folder.name
+            dest_file   = dest_folder / file.name
+            print(f'    FROM  {backup_file}')
+            print(f'    TO    {dest_file}')
+            dest_folder.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(str(backup_file), str(dest_file))
+                print(f'    → COPIED OK')
+                total_restored += 1
+            except Exception as e:
+                print(f'    → ERROR: {e}', file=sys.stderr)
             continue
 
         backup_file = candidates[0]
