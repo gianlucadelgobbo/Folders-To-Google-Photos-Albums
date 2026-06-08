@@ -79,7 +79,7 @@ def is_supported_media(file_path: Path) -> bool:
     supported_exts = {
         # Images
         ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
-        ".heic", ".heif", ".raw", ".cr2", ".nef", ".rw2",
+        ".heic", ".heif", ".raw", ".cr2", ".nef", ".rw2", ".orf", ".dng", ".tif", ".tiff",
         # Video
         ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm",
         ".m4v", ".3gp", ".3g2", ".mts", ".m2ts", ".wm"
