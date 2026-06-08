@@ -29,6 +29,59 @@ These are passed directly to the Google Photos API; supported formats depend on 
 pip install -r requirements.txt
 ```
 
+## Starting a New Batch
+
+Follow these steps each time you start uploading a new folder.
+
+### 1. Triage — separate problematic files
+
+```bash
+python3 tools/triage_files.py --path "/path/to/folder" --dry-run
+python3 tools/triage_files.py --path "/path/to/folder"
+```
+
+Moves files into dedicated subfolders:
+- `_UNSUPPORTED/` — unsupported formats (FLV, F4V, SWF)
+- `_TOOSMALL/` — empty files (0 bytes)
+- `_TOOLARGE/` — files over 10 GB
+
+### 2. Convert unsupported files (if any)
+
+```bash
+python3 tools/convert_unsupported.py \
+    --path "/path/to/folder/_UNSUPPORTED" \
+    --dest "/path/to/folder" \
+    --dry-run
+
+python3 tools/convert_unsupported.py \
+    --path "/path/to/folder/_UNSUPPORTED" \
+    --dest "/path/to/folder"
+```
+
+Converts FLV/F4V/SWF to MP4 and moves them back into the original subfolders.
+
+### 3. Upload
+
+```bash
+python3 gphotos_uploader.py --path "/path/to/folder"
+```
+
+### 4. Retry failed uploads (if needed)
+
+```bash
+python3 gphotos_uploader.py --path "/path/to/folder" --retry-failed
+```
+
+### State files between batches
+
+- `upload_state.json` — auto-cleans entries pointing to paths that no longer exist on startup; safe to reuse across batches.
+- `galbum_cache.json` — global cache of your Google Photos albums; safe to reuse.
+- `failed_uploads.json` — accumulates failures across batches. Before starting a new batch, either retry remaining failures from the previous one, or archive the file and start fresh:
+  ```bash
+  mv failed_uploads.json failed_uploads_prev.json
+  echo '{"UploadError":{},"AddToAlbumError":{},"TooLarge":{},"ExifErrors":{},"UnsupportedFormat":{}}' > failed_uploads.json
+  ```
+
 ## Usage
 
 ### Basic Upload
