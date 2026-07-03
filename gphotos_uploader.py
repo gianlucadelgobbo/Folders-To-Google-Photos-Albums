@@ -16,7 +16,7 @@ from google.oauth2.credentials import Credentials
 import argparse
 import subprocess
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 import gc
 from typing import Tuple, Optional
 import urllib.parse
@@ -1115,6 +1115,70 @@ def build_datetime_from_folder_info(original_dt: datetime, folder_info: Tuple[Op
             day=1
         )
     
+def find_takeout_json(file_path: Path) -> Optional[Path]:
+    """Find a Google Takeout JSON sidecar for the given media file.
+    Tries <name>.json then <stem>.json (e.g. photo.jpg.json, then photo.json).
+    """
+    for candidate in [
+        file_path.parent / (file_path.name + '.json'),
+        file_path.parent / (file_path.stem + '.json'),
+    ]:
+        if candidate.exists():
+            return candidate
+    return None
+
+def read_date_from_takeout_json(json_path: Path) -> Optional[datetime]:
+    """Read photoTakenTime (Unix timestamp) from a Google Takeout JSON sidecar."""
+    try:
+        with open(json_path, 'r', encoding='utf-8') as fh:
+            data = json.load(fh)
+        ts_str = data.get('photoTakenTime', {}).get('timestamp')
+        if ts_str:
+            return datetime.fromtimestamp(int(ts_str), tz=timezone.utc).replace(tzinfo=None)
+    except Exception as e:
+        log_warn(f"[TAKEOUT] Could not read date from {json_path.name}: {e}")
+    return None
+
+def apply_takeout_date_to_exif(file_path: Path, dt: datetime, folder_name: str):
+    """Write a Takeout JSON date into the media file's EXIF/QuickTime tags."""
+    dt_str = dt.strftime(EXIF_DATE_FMT)
+    mime_type, _ = mimetypes.guess_type(str(file_path))
+    is_video = (
+        (mime_type and mime_type.startswith("video/"))
+        or file_path.suffix.lower() in (".mov", ".mp4", ".m4v", ".avi", ".flv", ".wmv", ".mkv", ".webm", ".3gp", ".3g2", ".mts", ".m2ts")
+    )
+    if is_video:
+        cmd = [
+            "exiftool", "-overwrite_original",
+            f"-QuickTime:CreateDate={dt_str}",
+            f"-QuickTime:ModifyDate={dt_str}",
+            f"-QuickTime:MediaCreateDate={dt_str}",
+            f"-QuickTime:MediaModifyDate={dt_str}",
+            f"-QuickTime:TrackCreateDate={dt_str}",
+            f"-QuickTime:TrackModifyDate={dt_str}",
+            f"-CreateDate={dt_str}",
+            f"-ModifyDate={dt_str}",
+            str(file_path)
+        ]
+    else:
+        cmd = [
+            "exiftool", "-overwrite_original",
+            f"-DateTimeOriginal={dt_str}",
+            f"-CreateDate={dt_str}",
+            f"-ModifyDate={dt_str}",
+            str(file_path)
+        ]
+    try:
+        subprocess.run(cmd, check=True)
+        log_warn(f"[TAKEOUT] Applied date {dt_str} to {file_path.name}")
+        update_file_timestamp(file_path, dt)
+        return True
+    except subprocess.CalledProcessError as e:
+        add_failure("ExifErrors", folder_name, file_path.name, file_path.parent)
+        log_warn(f"[TAKEOUT] Failed to apply date to {file_path.name}: {e}")
+        return False
+
+
 def force_file_download(file_path: Path) -> bool:
     """Forza il download di un file usando exiftool."""
     try:
@@ -1535,6 +1599,25 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
         total_failed += 1
         return
 
+    # Apply date from Google Takeout JSON sidecar if present (always, not just --fix-dates)
+    takeout_json = find_takeout_json(file)
+    if takeout_json:
+        takeout_dt = read_date_from_takeout_json(takeout_json)
+        if takeout_dt:
+            if DRY_RUN:
+                log_warn(f"[DRY-RUN] Would apply Takeout JSON date {takeout_dt} to EXIF of {file.name}")
+                log_warn(f"[DRY-RUN] Would delete Takeout JSON sidecar: {takeout_json.name}")
+            else:
+                ok = apply_takeout_date_to_exif(file, takeout_dt, folder_name)
+                if ok:
+                    # Delete the sidecar JSON now that its date has been written into EXIF —
+                    # keeps the folder clean and prevents re-processing on future runs.
+                    try:
+                        takeout_json.unlink()
+                        log_warn(f"[TAKEOUT] Deleted sidecar after use: {takeout_json.name}")
+                    except Exception as e:
+                        log_warn(f"[TAKEOUT] Could not delete sidecar {takeout_json.name}: {e}")
+
     if FIX_DATES:
         force_file_download(file)
         # Update media dates (now handles both EXIF and QuickTime tags)
@@ -1665,6 +1748,11 @@ async def main():
             if file.is_file():
                 # Skip macOS hidden/metadata files (.DS_Store, ._*, etc.)
                 if file.name.startswith('.'):
+                    continue
+
+                # Skip Google Takeout JSON sidecars — used for EXIF enrichment, not upload
+                if file.suffix.lower() == '.json':
+                    log_warn(f"[SKIP] Skipping JSON sidecar: {file.name}")
                     continue
 
                 # IMPORTANT: reload album_id in case it was repaired during a previous file
