@@ -1088,6 +1088,10 @@ def update_filesystem_date_if_mismatch(file: Path, folder_name: str):
         else:
             update_file_timestamp(file, new_dt)
             log_warn(f"[FIXED] Filesystem timestamp of {file.name}: {current_ts} → {new_dt}")
+    elif sys.platform == 'darwin' and not DRY_RUN:
+        # mtime already correct but birthtime is often wrong on recently-downloaded files —
+        # fix it even when no mtime change is needed.
+        _set_mac_birthtime(file, new_dt)
 
 def _set_mac_birthtime(path: Path, dt: datetime) -> bool:
     """Set macOS file creation date (birthtime).
