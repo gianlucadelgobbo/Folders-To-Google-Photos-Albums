@@ -1092,6 +1092,17 @@ def update_filesystem_date_if_mismatch(file: Path, folder_name: str):
 def update_file_timestamp(path: Path, dt: datetime):
     ts = dt.timestamp()  # handles naive and UTC-aware datetimes
     os.utime(path, (ts, ts))
+    # On macOS, os.utime only sets mtime/atime — the birthtime (creation date) is untouched.
+    # This causes creation date > modification date when back-dating recently-downloaded files.
+    # SetFile -d fixes the birthtime; requires Xcode Command Line Tools.
+    if sys.platform == 'darwin':
+        try:
+            subprocess.run(
+                ["SetFile", "-d", dt.strftime("%m/%d/%Y %H:%M:%S"), str(path)],
+                check=True, capture_output=True
+            )
+        except Exception:
+            pass  # SetFile not available, skip birthtime correction
 
     
 def build_datetime_from_folder_info(original_dt: datetime, folder_info: Tuple[Optional[int], Optional[int], Optional[int]]) -> datetime:
