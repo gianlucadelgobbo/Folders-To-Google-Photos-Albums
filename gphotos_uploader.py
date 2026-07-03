@@ -980,116 +980,95 @@ def is_solidal(folder_info, dt: datetime) -> bool:
         return False
     return True
 
-def update_media_dates_if_mismatch(file_path, folder_name):
-    """Update media dates (EXIF for images, QuickTime for video) if not solidal with folder."""
+def _fix_file_dates(file: Path, folder_name: str):
+    """
+    Fix all dates on a media file. Called only when --fix-dates is active.
+
+    Flow:
+      1. Takeout JSON sidecar  → write date + GPS + description into embedded metadata, delete JSON
+      2. Embedded dates check  → if missing or wrong vs folder name, write correct dates via exiftool
+      3. Filesystem timestamps → set mtime + birthtime to the final determined date
+    """
+    target_dt: Optional[datetime] = None
+
+    # 1. Takeout JSON sidecar (highest priority — original capture metadata)
+    json_path = find_takeout_json(file)
+    if json_path:
+        meta = read_takeout_json_metadata(json_path)
+        if meta:
+            if DRY_RUN:
+                log_warn(f"[DRY-RUN] Would apply Takeout JSON to {file.name}: "
+                         f"date={meta.get('datetime')}, gps={bool(meta.get('gps'))}, desc={bool(meta.get('description'))}")
+            else:
+                ok = apply_takeout_metadata(file, meta, folder_name)
+                if ok:
+                    target_dt = meta.get('datetime')
+                    try:
+                        json_path.unlink()
+                        log_warn(f"[TAKEOUT] Deleted sidecar: {json_path.name}")
+                    except Exception as e:
+                        log_warn(f"[TAKEOUT] Could not delete sidecar {json_path.name}: {e}")
+
+    # 2. Embedded dates check against folder name
     folder_info = extract_date_from_folder(folder_name)
-    log_warn(f"Reading date from folder: {folder_info}")
-    if not folder_info:
-        return
+    if folder_info:
+        dates = get_gphotos_relevant_dates_exiftool(str(file))
+        best_embedded = (
+            dates.get("EXIF:DateTimeOriginal") or
+            dates.get("QuickTime:CreateDate") or
+            dates.get("EXIF:CreateDate")
+        )
 
-    # 1) Read all dates that matter for Google Photos
-    dates = get_gphotos_relevant_dates_exiftool(file_path)
-
-    # 2) Check only embedded dates — filesystem mtime is NOT read by Google Photos
-    #    so a matching mtime is not enough to skip EXIF writing.
-    fs_dt = datetime.fromtimestamp(Path(file_path).stat().st_mtime)
-    if dates and any(is_solidal(folder_info, dt) for dt in dates.values() if dt):
-        log_warn("[DATES] Embedded dates are solidal with folder info (no change needed)")
-        return
-
-    # 3) Mismatch or no embedded dates: pick a "base time" to preserve hour/min/sec
-    # Priority: DateTimeOriginal → QuickTime:CreateDate → fs mtime
-    base_dt = (
-        dates.get("EXIF:DateTimeOriginal")
-        or dates.get("QuickTime:CreateDate")
-        or fs_dt
-    )
-
-    new_dt = build_datetime_from_folder_info(base_dt, folder_info)
-    dt_str = new_dt.strftime(EXIF_DATE_FMT)
-
-    if DRY_RUN:
-        log_warn(f"[DRY-RUN] Would fix media dates of {Path(file_path).name}: base={base_dt} → {new_dt}")
-        return
-
-    # 5) Determine if video based on MIME type or extension
-    mime_type, _ = mimetypes.guess_type(str(file_path))
-    is_video = (
-        (mime_type and mime_type.startswith("video/"))
-        or Path(file_path).suffix.lower() in (".mov", ".mp4", ".m4v", ".avi", ".flv", ".wmv", ".mkv", ".webm", ".3gp", ".3g2", ".mts", ".m2ts")
-    )
-
-    if is_video:
-        # Update QuickTime tags (what Google Photos uses for video)
-        cmd = [
-            "exiftool",
-            "-overwrite_original",
-            f"-QuickTime:CreateDate={dt_str}",
-            f"-QuickTime:ModifyDate={dt_str}",
-            f"-QuickTime:MediaCreateDate={dt_str}",
-            f"-QuickTime:MediaModifyDate={dt_str}",
-            f"-QuickTime:TrackCreateDate={dt_str}",
-            f"-QuickTime:TrackModifyDate={dt_str}",
-            # Also update EXIF for consistency
-            f"-CreateDate={dt_str}",
-            f"-ModifyDate={dt_str}",
-            file_path
-        ]
-    else:
-        # Update EXIF tags (images/raw)
-        cmd = [
-            "exiftool",
-            "-overwrite_original",
-            f"-DateTimeOriginal={dt_str}",
-            f"-CreateDate={dt_str}",
-            f"-ModifyDate={dt_str}",
-            file_path
-        ]
-
-    try:
-        subprocess.run(cmd, check=True)
-        log_warn(f"[FIXED] {Path(file_path).name} dates aligned to folder: {dt_str}")
-        # 6) Align filesystem mtime/atime ONLY after exiftool succeeds
-        # This prevents desync if exiftool fails partway
-        update_file_timestamp(Path(file_path), new_dt)
-    except subprocess.CalledProcessError as e:
-        add_failure("ExifErrors", folder_name, Path(file_path).name, Path(file_path).parent)
-        log_warn(f"[EXIFTOOL-WRITE] Failed to update dates on {file_path}: {e}")
-
-def get_exif_datetimeoriginal_exiftool(file_path):
-    """Legacy function - now just reads from the new multi-date function."""
-    dates = get_gphotos_relevant_dates_exiftool(file_path)
-    return dates.get("EXIF:DateTimeOriginal") or dates.get("QuickTime:CreateDate")
-
-def update_filesystem_date_if_mismatch(file: Path, folder_name: str):
-    folder_info = extract_date_from_folder(folder_name)
-    if not folder_info:
-        return
-
-    # Get current filesystem timestamp
-    current_ts = datetime.fromtimestamp(file.stat().st_mtime)
-    
-    # Only change components that are specified and different from current values
-    new_dt = current_ts
-    y, m, d = folder_info
-    
-    if y is not None and y != current_ts.year:
-        new_dt = new_dt.replace(year=y)
-    if m is not None and m != current_ts.month:
-        new_dt = new_dt.replace(month=m)
-    if d is not None and d != current_ts.day:
-        new_dt = new_dt.replace(day=d)
-
-    if new_dt != current_ts:
-        if DRY_RUN:
-            log_warn(f"[DRY-RUN] Would fix Creation and Modification dates of {file.name}: {current_ts} → {new_dt}")
+        if best_embedded and is_solidal(folder_info, best_embedded):
+            log_warn(f"[DATES] Embedded date OK: {best_embedded}")
+            if target_dt is None:
+                target_dt = best_embedded
         else:
-            update_file_timestamp(file, new_dt)
-            log_warn(f"[FIXED] Filesystem timestamp of {file.name}: {current_ts} → {new_dt}")
-    elif sys.platform == 'darwin' and not DRY_RUN:
-        # mtime already correct but birthtime is often wrong on recently-downloaded files —
-        # fix it even when no mtime change is needed.
-        _set_mac_birthtime(file, new_dt)
+            # No embedded date or mismatch — compute from folder name, preserve HH:MM:SS from best available source
+            base_dt = best_embedded or datetime.fromtimestamp(file.stat().st_mtime)
+            new_dt = build_datetime_from_folder_info(base_dt, folder_info)
+            dt_str = new_dt.strftime(EXIF_DATE_FMT)
+
+            if DRY_RUN:
+                log_warn(f"[DRY-RUN] Would fix embedded dates of {file.name}: {base_dt} → {new_dt}")
+            else:
+                mime_type, _ = mimetypes.guess_type(str(file))
+                is_video = (
+                    (mime_type and mime_type.startswith("video/"))
+                    or file.suffix.lower() in (".mov", ".mp4", ".m4v", ".avi", ".flv", ".wmv",
+                                               ".mkv", ".webm", ".3gp", ".3g2", ".mts", ".m2ts")
+                )
+                if is_video:
+                    cmd = ["exiftool", "-overwrite_original",
+                           f"-QuickTime:CreateDate={dt_str}",
+                           f"-QuickTime:ModifyDate={dt_str}",
+                           f"-QuickTime:MediaCreateDate={dt_str}",
+                           f"-QuickTime:MediaModifyDate={dt_str}",
+                           f"-QuickTime:TrackCreateDate={dt_str}",
+                           f"-QuickTime:TrackModifyDate={dt_str}",
+                           f"-CreateDate={dt_str}",
+                           f"-ModifyDate={dt_str}",
+                           str(file)]
+                else:
+                    cmd = ["exiftool", "-overwrite_original",
+                           f"-DateTimeOriginal={dt_str}",
+                           f"-CreateDate={dt_str}",
+                           f"-ModifyDate={dt_str}",
+                           str(file)]
+                try:
+                    subprocess.run(cmd, check=True)
+                    log_warn(f"[DATES] Fixed embedded dates for {file.name}: → {dt_str}")
+                    target_dt = new_dt
+                except subprocess.CalledProcessError as e:
+                    add_failure("ExifErrors", folder_name, file.name, file.parent)
+                    log_warn(f"[DATES] exiftool failed for {file.name}: {e}")
+
+    # 3. Filesystem timestamps — always set mtime + birthtime to the determined date
+    if target_dt:
+        if DRY_RUN:
+            log_warn(f"[DRY-RUN] Would set filesystem timestamps of {file.name} to {target_dt}")
+        else:
+            update_file_timestamp(file, target_dt)
 
 def _set_mac_birthtime(path: Path, dt: datetime) -> bool:
     """Set macOS file creation date (birthtime).
@@ -1694,34 +1673,7 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
 
     if FIX_DATES:
         force_file_download(file)
-
-        # Step 1: apply all metadata from Takeout JSON sidecar if present (date, GPS, description)
-        takeout_json = find_takeout_json(file)
-        if takeout_json:
-            metadata = read_takeout_json_metadata(takeout_json)
-            if metadata:
-                if DRY_RUN:
-                    log_warn(f"[DRY-RUN] Would apply Takeout JSON metadata to {file.name}: {metadata}")
-                else:
-                    ok = apply_takeout_metadata(file, metadata, folder_name)
-                    if ok:
-                        try:
-                            takeout_json.unlink()
-                            log_warn(f"[TAKEOUT] Deleted sidecar after use: {takeout_json.name}")
-                        except Exception as e:
-                            log_warn(f"[TAKEOUT] Could not delete sidecar {takeout_json.name}: {e}")
-
-        # Step 2: check/fix date based on folder name (runs regardless of JSON presence)
-        if is_supported_media(file):
-            if DRY_RUN:
-                log_warn(f"[DRY-RUN] Would check and update media dates for: {file.name}")
-            else:
-                update_media_dates_if_mismatch(str(file), folder_name)
-
-        # Step 3: align filesystem timestamps (mtime + birthtime)
-        if DRY_RUN:
-            log_warn(f"[DRY-RUN] Would check and update filesystem timestamp for: {file.name}")
-        update_filesystem_date_if_mismatch(file, folder_name)
+        _fix_file_dates(file, folder_name)
 
     # Upload attempt for all files
     if DRY_RUN:
