@@ -1164,55 +1164,109 @@ def find_takeout_json(file_path: Path) -> Optional[Path]:
             return candidate
     return None
 
-def read_date_from_takeout_json(json_path: Path) -> Optional[datetime]:
-    """Read photoTakenTime (Unix timestamp) from a Google Takeout JSON sidecar."""
+def read_takeout_json_metadata(json_path: Path) -> dict:
+    """Read all metadata from a Google Takeout JSON sidecar.
+    Returns a dict with keys: 'datetime', 'gps' (lat/lon/alt), 'description'.
+    """
     try:
         with open(json_path, 'r', encoding='utf-8') as fh:
             data = json.load(fh)
+
+        result = {}
+
+        # Date: photoTakenTime is the original capture date
         ts_str = data.get('photoTakenTime', {}).get('timestamp')
         if ts_str:
-            return datetime.fromtimestamp(int(ts_str), tz=timezone.utc).replace(tzinfo=None)
-    except Exception as e:
-        log_warn(f"[TAKEOUT] Could not read date from {json_path.name}: {e}")
-    return None
+            result['datetime'] = datetime.fromtimestamp(int(ts_str), tz=timezone.utc).replace(tzinfo=None)
 
-def apply_takeout_date_to_exif(file_path: Path, dt: datetime, folder_name: str):
-    """Write a Takeout JSON date into the media file's EXIF/QuickTime tags."""
-    dt_str = dt.strftime(EXIF_DATE_FMT)
+        # GPS: prefer geoDataExif (from original EXIF), fall back to geoData (Google's enrichment)
+        geo = data.get('geoDataExif') or data.get('geoData') or {}
+        lat = geo.get('latitude')
+        lon = geo.get('longitude')
+        alt = geo.get('altitude')
+        if lat is not None and lon is not None and not (lat == 0 and lon == 0):
+            result['gps'] = {'lat': lat, 'lon': lon, 'alt': alt}
+
+        # Description
+        desc = (data.get('description') or '').strip()
+        if desc:
+            result['description'] = desc
+
+        return result
+    except Exception as e:
+        log_warn(f"[TAKEOUT] Could not read metadata from {json_path.name}: {e}")
+        return {}
+
+def apply_takeout_metadata(file_path: Path, metadata: dict, folder_name: str) -> bool:
+    """Write all Takeout JSON metadata (date, GPS, description) into the media file."""
+    if not metadata:
+        return False
+
     mime_type, _ = mimetypes.guess_type(str(file_path))
     is_video = (
         (mime_type and mime_type.startswith("video/"))
         or file_path.suffix.lower() in (".mov", ".mp4", ".m4v", ".avi", ".flv", ".wmv", ".mkv", ".webm", ".3gp", ".3g2", ".mts", ".m2ts")
     )
-    if is_video:
-        cmd = [
-            "exiftool", "-overwrite_original",
-            f"-QuickTime:CreateDate={dt_str}",
-            f"-QuickTime:ModifyDate={dt_str}",
-            f"-QuickTime:MediaCreateDate={dt_str}",
-            f"-QuickTime:MediaModifyDate={dt_str}",
-            f"-QuickTime:TrackCreateDate={dt_str}",
-            f"-QuickTime:TrackModifyDate={dt_str}",
-            f"-CreateDate={dt_str}",
-            f"-ModifyDate={dt_str}",
-            str(file_path)
+
+    cmd = ["exiftool", "-overwrite_original"]
+
+    # Date
+    dt = metadata.get('datetime')
+    if dt:
+        dt_str = dt.strftime(EXIF_DATE_FMT)
+        if is_video:
+            cmd += [
+                f"-QuickTime:CreateDate={dt_str}",
+                f"-QuickTime:ModifyDate={dt_str}",
+                f"-QuickTime:MediaCreateDate={dt_str}",
+                f"-QuickTime:MediaModifyDate={dt_str}",
+                f"-QuickTime:TrackCreateDate={dt_str}",
+                f"-QuickTime:TrackModifyDate={dt_str}",
+                f"-CreateDate={dt_str}",
+                f"-ModifyDate={dt_str}",
+            ]
+        else:
+            cmd += [
+                f"-DateTimeOriginal={dt_str}",
+                f"-CreateDate={dt_str}",
+                f"-ModifyDate={dt_str}",
+            ]
+
+    # GPS
+    gps = metadata.get('gps')
+    if gps:
+        lat, lon, alt = gps['lat'], gps['lon'], gps.get('alt')
+        cmd += [
+            f"-GPSLatitude={abs(lat)}",
+            f"-GPSLatitudeRef={'N' if lat >= 0 else 'S'}",
+            f"-GPSLongitude={abs(lon)}",
+            f"-GPSLongitudeRef={'E' if lon >= 0 else 'W'}",
         ]
-    else:
-        cmd = [
-            "exiftool", "-overwrite_original",
-            f"-DateTimeOriginal={dt_str}",
-            f"-CreateDate={dt_str}",
-            f"-ModifyDate={dt_str}",
-            str(file_path)
-        ]
+        if alt is not None:
+            cmd += [
+                f"-GPSAltitude={abs(alt)}",
+                f"-GPSAltitudeRef={'0' if alt >= 0 else '1'}",
+            ]
+
+    # Description
+    desc = metadata.get('description')
+    if desc:
+        cmd += [f"-Description={desc}", f"-ImageDescription={desc}"]
+
+    if len(cmd) == 2:  # nothing to write
+        return False
+
+    cmd.append(str(file_path))
+
     try:
         subprocess.run(cmd, check=True)
-        log_warn(f"[TAKEOUT] Applied date {dt_str} to {file_path.name}")
-        update_file_timestamp(file_path, dt)
+        log_warn(f"[TAKEOUT] Applied to {file_path.name}: date={dt}, gps={gps is not None}, desc={bool(desc)}")
+        if dt:
+            update_file_timestamp(file_path, dt)
         return True
     except subprocess.CalledProcessError as e:
         add_failure("ExifErrors", folder_name, file_path.name, file_path.parent)
-        log_warn(f"[TAKEOUT] Failed to apply date to {file_path.name}: {e}")
+        log_warn(f"[TAKEOUT] Failed to apply metadata to {file_path.name}: {e}")
         return False
 
 
@@ -1636,45 +1690,36 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
         total_failed += 1
         return
 
-    # Apply date from Google Takeout JSON sidecar if present (always, not just --fix-dates)
-    takeout_json = find_takeout_json(file)
-    if takeout_json:
-        takeout_dt = read_date_from_takeout_json(takeout_json)
-        if takeout_dt:
-            if DRY_RUN:
-                log_warn(f"[DRY-RUN] Would apply Takeout JSON date {takeout_dt} to EXIF of {file.name}")
-                log_warn(f"[DRY-RUN] Would delete Takeout JSON sidecar: {takeout_json.name}")
-            else:
-                ok = apply_takeout_date_to_exif(file, takeout_dt, folder_name)
-                if ok:
-                    # Delete the sidecar JSON now that its date has been written into EXIF —
-                    # keeps the folder clean and prevents re-processing on future runs.
-                    try:
-                        takeout_json.unlink()
-                        log_warn(f"[TAKEOUT] Deleted sidecar after use: {takeout_json.name}")
-                    except Exception as e:
-                        log_warn(f"[TAKEOUT] Could not delete sidecar {takeout_json.name}: {e}")
-
     if FIX_DATES:
         force_file_download(file)
-        # Update media dates (now handles both EXIF and QuickTime tags)
+
+        # Step 1: apply all metadata from Takeout JSON sidecar if present (date, GPS, description)
+        takeout_json = find_takeout_json(file)
+        if takeout_json:
+            metadata = read_takeout_json_metadata(takeout_json)
+            if metadata:
+                if DRY_RUN:
+                    log_warn(f"[DRY-RUN] Would apply Takeout JSON metadata to {file.name}: {metadata}")
+                else:
+                    ok = apply_takeout_metadata(file, metadata, folder_name)
+                    if ok:
+                        try:
+                            takeout_json.unlink()
+                            log_warn(f"[TAKEOUT] Deleted sidecar after use: {takeout_json.name}")
+                        except Exception as e:
+                            log_warn(f"[TAKEOUT] Could not delete sidecar {takeout_json.name}: {e}")
+
+        # Step 2: check/fix date based on folder name (runs regardless of JSON presence)
         if is_supported_media(file):
             if DRY_RUN:
                 log_warn(f"[DRY-RUN] Would check and update media dates for: {file.name}")
             else:
                 update_media_dates_if_mismatch(str(file), folder_name)
-        else:
-            if DRY_RUN:
-                log_warn(f"[DRY-RUN] Would skip media operations for unsupported format: {file.name}")
-            else:
-                log_warn(f"❌ Skip media operations for unsupported format: {file.name}")
 
-        # Filesystem timestamp update for all files
+        # Step 3: align filesystem timestamps (mtime + birthtime)
         if DRY_RUN:
             log_warn(f"[DRY-RUN] Would check and update filesystem timestamp for: {file.name}")
-            update_filesystem_date_if_mismatch(file, folder_name)
-        else:
-            update_filesystem_date_if_mismatch(file, folder_name)
+        update_filesystem_date_if_mismatch(file, folder_name)
 
     # Upload attempt for all files
     if DRY_RUN:
