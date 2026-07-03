@@ -990,16 +990,14 @@ def update_media_dates_if_mismatch(file_path, folder_name):
     # 1) Read all dates that matter for Google Photos
     dates = get_gphotos_relevant_dates_exiftool(file_path)
 
-    # 2) Add filesystem mtime as fallback candidate
+    # 2) Check only embedded dates — filesystem mtime is NOT read by Google Photos
+    #    so a matching mtime is not enough to skip EXIF writing.
     fs_dt = datetime.fromtimestamp(Path(file_path).stat().st_mtime)
-    candidate_dts = list(dates.values()) + [fs_dt]
-
-    # 3) If any date is solidal with folder → no change needed
-    if any(is_solidal(folder_info, dt) for dt in candidate_dts if dt):
-        log_warn("[DATES] Dates are solidal with folder info (no change needed)")
+    if dates and any(is_solidal(folder_info, dt) for dt in dates.values() if dt):
+        log_warn("[DATES] Embedded dates are solidal with folder info (no change needed)")
         return
 
-    # 4) Mismatch: pick a "base time" to preserve hour/min/sec
+    # 3) Mismatch or no embedded dates: pick a "base time" to preserve hour/min/sec
     # Priority: DateTimeOriginal → QuickTime:CreateDate → fs mtime
     base_dt = (
         dates.get("EXIF:DateTimeOriginal")
