@@ -1089,20 +1089,46 @@ def update_filesystem_date_if_mismatch(file: Path, folder_name: str):
             update_file_timestamp(file, new_dt)
             log_warn(f"[FIXED] Filesystem timestamp of {file.name}: {current_ts} → {new_dt}")
 
+def _set_mac_birthtime(path: Path, dt: datetime) -> bool:
+    """Set macOS file creation date (birthtime).
+    Tries SetFile (Xcode CLT) first, falls back to osascript which is always available.
+    os.utime only sets mtime/atime and cannot touch birthtime.
+    """
+    date_str = dt.strftime("%m/%d/%Y %H:%M:%S")
+
+    # Primary: SetFile (fast, requires Xcode CLT)
+    try:
+        subprocess.run(["SetFile", "-d", date_str, str(path)], check=True, capture_output=True)
+        return True
+    except FileNotFoundError:
+        pass  # Xcode CLT not installed, fall through to osascript
+    except subprocess.CalledProcessError as e:
+        log_warn(f"[BIRTHTIME] SetFile failed for {path.name}: {e.stderr.decode(errors='replace')}")
+
+    # Fallback: osascript via Finder (always available on macOS, no extra tools needed)
+    try:
+        # AppleScript epoch starts Jan 1 1904; Unix epoch starts Jan 1 1970.
+        # Offset = 2082844800 seconds. We compute the target date arithmetically
+        # to avoid locale-dependent date string parsing.
+        mac_ts = int(dt.timestamp()) + 2082844800
+        path_escaped = str(path).replace('\\', '\\\\').replace('"', '\\"')
+        script = (
+            f'tell application "Finder" to set creation date of '
+            f'((POSIX file "{path_escaped}") as alias) to '
+            f'(current date) - ((current date) as integer) + {mac_ts}'
+        )
+        subprocess.run(["osascript", "-e", script], check=True, capture_output=True, timeout=10)
+        return True
+    except Exception as e:
+        log_warn(f"[BIRTHTIME] osascript failed for {path.name}: {e}")
+        return False
+
+
 def update_file_timestamp(path: Path, dt: datetime):
-    ts = dt.timestamp()  # handles naive and UTC-aware datetimes
+    ts = dt.timestamp()
     os.utime(path, (ts, ts))
-    # On macOS, os.utime only sets mtime/atime — the birthtime (creation date) is untouched.
-    # This causes creation date > modification date when back-dating recently-downloaded files.
-    # SetFile -d fixes the birthtime; requires Xcode Command Line Tools.
     if sys.platform == 'darwin':
-        try:
-            subprocess.run(
-                ["SetFile", "-d", dt.strftime("%m/%d/%Y %H:%M:%S"), str(path)],
-                check=True, capture_output=True
-            )
-        except Exception:
-            pass  # SetFile not available, skip birthtime correction
+        _set_mac_birthtime(path, dt)
 
     
 def build_datetime_from_folder_info(original_dt: datetime, folder_info: Tuple[Optional[int], Optional[int], Optional[int]]) -> datetime:
