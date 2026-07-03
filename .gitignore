@@ -4,3 +4,4 @@ upload.log
 credentials*
 .DS_Store
 utilities
+token.json
