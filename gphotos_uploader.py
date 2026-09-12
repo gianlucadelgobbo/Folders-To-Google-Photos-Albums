@@ -1572,6 +1572,54 @@ async def retry_failed():
                     log_error(f"Error processing file {file_name}: {str(e)}", exc_info=True)
                     log_warn(f"❌ Failed to retry file: {file_name}")
 
+    log_warn("[RETRY] Processing ExifErrors failures...")
+    for folder_name in list(failures.get("ExifErrors", {}).keys()):
+        entry = failures["ExifErrors"][folder_name]
+        folder_path = Path(entry.get("path"))
+        file_list = entry.get("files", [])
+
+        if not folder_path.exists():
+            log_warn(f"❌ Folder not found: {folder_path}")
+            continue
+
+        for file_name in file_list[:]:
+            if shutdown_handler.check():
+                log_warn("[RETRY] Shutdown requested, stopping retry process...")
+                save_json(FAILED_FILE, failures)
+                return
+
+            file = folder_path / file_name
+            if not file.exists():
+                log_warn(f"[NOTFOUND] File no longer exists locally, moving to NotFoundLocally: {file_name}")
+                add_failure("NotFoundLocally", folder_name, file_name, folder_path)
+                failures["ExifErrors"][folder_name]["files"].remove(file_name)
+                if not failures["ExifErrors"][folder_name]["files"]:
+                    del failures["ExifErrors"][folder_name]
+                save_json(FAILED_FILE, failures)
+                continue
+
+            log_warn(f"[RETRY] Fixing dates for: {file_name}")
+            # Remove before retrying so a renewed exiftool failure (which calls add_failure
+            # internally, silently, without raising) re-adds it and we can detect it below.
+            failures["ExifErrors"][folder_name]["files"].remove(file_name)
+            if not failures["ExifErrors"][folder_name]["files"]:
+                del failures["ExifErrors"][folder_name]
+            save_json(FAILED_FILE, failures)
+
+            try:
+                force_file_download(file)
+                _fix_file_dates(file, folder_name)
+            except Exception as e:
+                log_error(f"Error fixing dates for {file_name}: {str(e)}", exc_info=True)
+                add_failure("ExifErrors", folder_name, file_name, folder_path)
+                continue
+
+            still_failing = file_name in failures.get("ExifErrors", {}).get(folder_name, {}).get("files", [])
+            if still_failing:
+                log_warn(f"❌ Exiftool still failing for: {file_name}")
+            else:
+                log_warn(f"✅ Successfully fixed dates: {file_name}")
+
     log_warn("Retry process completed. Exiting.")
 
 async def interruptible_sleep(total_seconds: int, step: float = 0.5):
