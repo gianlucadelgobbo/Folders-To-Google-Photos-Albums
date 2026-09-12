@@ -1396,9 +1396,18 @@ async def retry_failed():
                 # item can be a filename (str) or a dict (for AddToAlbumError)
                 file_name = item.get("name") if isinstance(item, dict) else item
 
-                # Skip non-uploadable files (.DS_Store, .xmp, hidden files, etc.)
+                # Non-uploadable files (.DS_Store, .xmp, unsupported formats like .psd, etc.)
+                # can never succeed - move them out permanently instead of retrying forever.
                 if not is_supported_media(Path(file_name)):
-                    log_warn(f"[RETRY] ⏭️  Skipping {file_name} (not a supported media file)")
+                    log_warn(f"[RETRY] Moving unsupported file to _UNSUPPORTED: {file_name}")
+                    unsupported_file = folder_path / file_name
+                    if unsupported_file.exists():
+                        move_to_unsupported(unsupported_file, folder_name)
+                    add_failure("UnsupportedFormat", folder_name, file_name, folder_path)
+                    failures[error_type][folder_name]["files"].remove(item)
+                    if not failures[error_type][folder_name]["files"]:
+                        del failures[error_type][folder_name]
+                    save_json(FAILED_FILE, failures)
                     continue
 
                 # Skip files that are too large - no point retrying
