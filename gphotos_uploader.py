@@ -40,6 +40,10 @@ class EmptyCloudFileError(NonRetryableError):
     """Raised when a cloud file is confirmed empty (no cloud icon, 0 bytes after copy)."""
     pass
 
+class FileNotFoundLocallyError(NonRetryableError):
+    """Raised when a file recorded in failed_uploads.json no longer exists at its recorded path."""
+    pass
+
 
 # Custom retry predicate to NOT retry on KeyboardInterrupt or NonRetryableError
 def retry_if_not_keyboard_interrupt(exception):
@@ -1524,6 +1528,13 @@ async def retry_failed():
                     if not failures[error_type][folder_name]["files"]:
                         del failures[error_type][folder_name]
                     save_json(FAILED_FILE, failures)
+                except FileNotFoundLocallyError:
+                    log_warn(f"[NOTFOUND] File no longer exists locally, moving to NotFoundLocally: {file_name}")
+                    add_failure("NotFoundLocally", folder_name, file_name, folder_path)
+                    failures[error_type][folder_name]["files"].remove(file_name)
+                    if not failures[error_type][folder_name]["files"]:
+                        del failures[error_type][folder_name]
+                    save_json(FAILED_FILE, failures)
                 except Exception as e:
                     log_error(f"Error processing file {file_name}: {str(e)}", exc_info=True)
                     log_warn(f"❌ Failed to retry file: {file_name}")
@@ -1564,7 +1575,7 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
     dst.parent.mkdir(parents=True, exist_ok=True)
 
     if not path.exists():
-        raise NonRetryableError(f"File not found on local filesystem (not synced from Drive): {path.name}")
+        raise FileNotFoundLocallyError(f"File not found on local filesystem (not synced from Drive): {path.name}")
 
     try:
         log_warn(f"[STAGE] CloudStorage file detected, staging locally: {path.name}")
