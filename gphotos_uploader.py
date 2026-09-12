@@ -1303,11 +1303,11 @@ class GracefulShutdown:
         now = time.time()
         # Double Ctrl+C within 1 second = hard exit
         if now - self._last_sigint < 1.0:
-            log_warn(f"\n[SHUTDOWN] Second Ctrl+C → forcing exit NOW (no waiting)", flush=True)
+            log_warn(f"\n[SHUTDOWN] Second Ctrl+C → forcing exit NOW (no waiting)")
             import os
             os._exit(130)  # Immediate exit, no cleanup
         self._last_sigint = now
-        log_warn(f"\n[SHUTDOWN] Received signal {signum}. Shutting down gracefully... (press Ctrl+C again to force exit)", flush=True)
+        log_warn(f"\n[SHUTDOWN] Received signal {signum}. Shutting down gracefully... (press Ctrl+C again to force exit)")
         self.shutdown_requested = True
         # Cancel all pending tasks
         try:
@@ -1452,8 +1452,41 @@ async def retry_failed():
                                 save_json(FAILED_FILE, failures)
                                 continue
                             except Exception as e:
-                                log_error(f"Error processing file {file_name}: {str(e)}", exc_info=True)
-                                log_warn(f"❌ Failed to retry file using upload token: {file_name}")
+                                # Stored upload_token is likely stale/expired (redeem tokens don't
+                                # last for months) - fall back to re-uploading the file from scratch.
+                                log_warn(f"[RETRY] Stale upload token for {file_name} ({e}), re-uploading file from scratch...")
+                                file = folder_path / file_name
+                                try:
+                                    local_file = stage_local_copy_if_cloud(file)
+                                    try:
+                                        fresh_upload_token = await upload_file(str(local_file))
+                                    finally:
+                                        if local_file != file:
+                                            cleanup_staged_file(local_file)
+                                    photo_id, effective_album_id = await add_to_album(fresh_upload_token, album_id, file_name, folder_name)
+                                    state[folder_name]['album_id'] = effective_album_id
+                                    log_warn(f"✅ Successfully retried file by re-uploading: {file_name}")
+                                    failures[error_type][folder_name]["files"].remove(file_entry)
+                                    if not failures[error_type][folder_name]["files"]:
+                                        del failures[error_type][folder_name]
+                                    save_json(FAILED_FILE, failures)
+                                except FileNotFoundLocallyError:
+                                    log_warn(f"[NOTFOUND] File no longer exists locally, moving to NotFoundLocally: {file_name}")
+                                    add_failure("NotFoundLocally", folder_name, file_name, folder_path)
+                                    failures[error_type][folder_name]["files"].remove(file_entry)
+                                    if not failures[error_type][folder_name]["files"]:
+                                        del failures[error_type][folder_name]
+                                    save_json(FAILED_FILE, failures)
+                                except EmptyCloudFileError:
+                                    log_warn(f"[TOOSMALL] Empty cloud file in retry: {file_name} - moving to _TOOSMALL")
+                                    move_to_toosmall(file, folder_name)
+                                    failures[error_type][folder_name]["files"].remove(file_entry)
+                                    if not failures[error_type][folder_name]["files"]:
+                                        del failures[error_type][folder_name]
+                                    save_json(FAILED_FILE, failures)
+                                except Exception as e2:
+                                    log_error(f"Error re-uploading file {file_name}: {str(e2)}", exc_info=True)
+                                    log_warn(f"❌ Failed to retry file by re-uploading: {file_name}")
                                 continue
                         else:
                             log_warn(f"❌ No photo_id or upload_token found for {file_name}, skipping")
