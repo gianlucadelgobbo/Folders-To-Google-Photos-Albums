@@ -1286,6 +1286,20 @@ def force_file_download(file_path: Path) -> bool:
         # Pulisci le risorse
         gc.collect()
 
+def _is_genuinely_empty(file: Path) -> bool:
+    """True only if the file is still 0 bytes after forcing it to download from Drive.
+
+    A bare stat()/getsize() can report 0 for a file that Drive hasn't finished
+    syncing yet - that must never be trusted on its own as proof the file is
+    actually empty, or perfectly good photos get moved to _TOOSMALL on a sync
+    timing glitch.
+    """
+    if os.path.getsize(file) != 0:
+        return False
+    log_warn(f"[TOOSMALL] {file.name} reads as 0 bytes, forcing download before trusting it...")
+    force_file_download(file)
+    return os.path.getsize(file) == 0
+
 # === SIGNAL HANDLING ===
 class GracefulShutdown:
     """Handle graceful shutdown on Ctrl+C - double Ctrl+C for hard exit"""
@@ -1528,7 +1542,7 @@ async def retry_failed():
                     continue
 
                 log_warn(f"[DEBUG] File extension: {file.suffix} (lowercase: {file.suffix.lower()})")
-                if file.exists() and os.path.getsize(file) == 0:
+                if file.exists() and _is_genuinely_empty(file):
                     numbered_copy = _find_numbered_copy(file)
                     if numbered_copy:
                         log_warn(f"[TOOSMALL] Empty file with numbered copy present ({numbered_copy.name}), deleting: {file_name}")
@@ -1655,8 +1669,10 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
     Copy a Google Drive CloudStorage file to a local temp path before uploading.
 
     macOS stores Drive file metadata (including size) locally even for files that
-    haven't been downloaded yet. Therefore st_size > 0 with st_blocks == 0 means
-    "not downloaded but has content". st_size == 0 means the file is genuinely empty.
+    haven't been downloaded yet, so st_size > 0 with st_blocks == 0 usually means
+    "not downloaded but has content". st_size == 0 is not trusted on its own though -
+    a file mid-sync can briefly read as 0 bytes - so _is_genuinely_empty() forces a
+    download and re-checks before concluding the file is actually empty.
 
     shutil.copyfileobj blocks naturally while Drive downloads the file content,
     so no explicit polling is needed — the copy itself is the wait.
@@ -1679,7 +1695,7 @@ def stage_local_copy_if_cloud(path: Path) -> Path:
         src_size = st.st_size
         log_warn(f"[STAGE] Source size (stat): {format_size(src_size)}")
 
-        if src_size == 0:
+        if src_size == 0 and _is_genuinely_empty(path):
             raise EmptyCloudFileError(f"File is 0 bytes in Drive (no cloud icon): {path.name}")
 
         # Streaming copy — blocks until Drive finishes downloading the file
@@ -1762,9 +1778,7 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
     file_size = os.path.getsize(file)
     max_size = 10 * 1024 * 1024 * 1024  # 10 GB
 
-    if file_size == 0:
-        # On macOS, Google Drive always exposes the real file size in stat() even for
-        # files not yet downloaded. So 0 bytes always means the file is genuinely empty.
+    if file_size == 0 and _is_genuinely_empty(file):
         numbered_copy = _find_numbered_copy(file)
         if numbered_copy:
             log_warn(f"[TOOSMALL] Empty file with numbered copy present ({numbered_copy.name}), deleting: {file.name}")
