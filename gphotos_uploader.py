@@ -855,14 +855,25 @@ def add_failure(error_type, folder_name, file_name, folder_path, album_id=None, 
             failures[error_type][folder_name]["album_id"] = album_id
             
     if error_type == "AddToAlbumError":
-        # For AddToAlbumError, store additional info including upload token
-        failures[error_type][folder_name]["files"].append({
-            "name": file_name,
-            "photo_id": photo_id,
-            "upload_token": upload_token,  # Store the upload token for retry
-            "retry_count": 0,
-            "last_attempt": datetime.now().isoformat()
-        })
+        # For AddToAlbumError, store additional info including upload token.
+        # Update the existing entry for this file instead of appending a duplicate.
+        files_list = failures[error_type][folder_name]["files"]
+        existing = next((f for f in files_list if isinstance(f, dict) and f.get("name") == file_name), None)
+        if existing:
+            existing["photo_id"] = photo_id
+            existing["upload_token"] = upload_token
+            existing["retry_count"] = existing.get("retry_count", 0) + 1
+            existing["last_attempt"] = datetime.now().isoformat()
+            log_warn(f"[FAILURE] Updated existing {error_type}: {folder_name}/{file_name}")
+        else:
+            files_list.append({
+                "name": file_name,
+                "photo_id": photo_id,
+                "upload_token": upload_token,  # Store the upload token for retry
+                "retry_count": 0,
+                "last_attempt": datetime.now().isoformat()
+            })
+            log_warn(f"[FAILURE] Tracked {error_type}: {folder_name}/{file_name}")
     else:
         # For other error types, store the filename and album id if available
         if file_name not in failures[error_type][folder_name]["files"]:
@@ -1481,7 +1492,12 @@ async def retry_failed():
                                     save_json(FAILED_FILE, failures)
                                 except Exception as e2:
                                     log_error(f"Error re-uploading file {file_name}: {str(e2)}", exc_info=True)
-                                    log_warn(f"❌ Failed to retry file by re-uploading: {file_name}")
+                                    log_warn(f"[RETRY] Still failing with a fresh upload token (not a stale-token issue) - moving to PermanentAddError: {file_name}")
+                                    add_failure("PermanentAddError", folder_name, file_name, folder_path, album_id=album_id)
+                                    failures[error_type][folder_name]["files"].remove(file_entry)
+                                    if not failures[error_type][folder_name]["files"]:
+                                        del failures[error_type][folder_name]
+                                    save_json(FAILED_FILE, failures)
                                 continue
                         else:
                             log_warn(f"❌ No photo_id or upload_token found for {file_name}, skipping")
