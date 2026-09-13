@@ -1486,6 +1486,7 @@ async def retry_failed():
                                 except EmptyCloudFileError:
                                     log_warn(f"[TOOSMALL] Empty cloud file in retry: {file_name} - moving to _TOOSMALL")
                                     move_to_toosmall(file, folder_name)
+                                    add_failure("EmptyFile", folder_name, file_name, folder_path)
                                     failures[error_type][folder_name]["files"].remove(file_entry)
                                     if not failures[error_type][folder_name]["files"]:
                                         del failures[error_type][folder_name]
@@ -1535,6 +1536,7 @@ async def retry_failed():
                     else:
                         log_warn(f"[TOOSMALL] Empty file in retry: {file_name} - moving to _TOOSMALL")
                         move_to_toosmall(file, folder_name)
+                        add_failure("EmptyFile", folder_name, file_name, folder_path)
                     failures[error_type][folder_name]["files"].remove(file_name)
                     if not failures[error_type][folder_name]["files"]:
                         del failures[error_type][folder_name]
@@ -1568,6 +1570,7 @@ async def retry_failed():
                 except EmptyCloudFileError:
                     log_warn(f"[TOOSMALL] Empty cloud file in retry: {file_name} - moving to _TOOSMALL")
                     move_to_toosmall(file, folder_name)
+                    add_failure("EmptyFile", folder_name, file_name, folder_path)
                     failures[error_type][folder_name]["files"].remove(file_name)
                     if not failures[error_type][folder_name]["files"]:
                         del failures[error_type][folder_name]
@@ -1775,6 +1778,7 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
                 log_warn(f"[DRY-RUN] Would move {file.name} → ../{TOOSMALL_DIR_NAME}/{folder_name}/")
             else:
                 move_to_toosmall(file, folder_name)
+                add_failure("EmptyFile", folder_name, file.name, folder_path)
         total_failed += 1
         return
 
@@ -1810,6 +1814,7 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
             log_warn(f"[DRY-RUN] Would move {file.name} → ../{TOOSMALL_DIR_NAME}/{folder_name}/")
         else:
             move_to_toosmall(file, folder_name)
+            add_failure("EmptyFile", folder_name, file.name, folder_path)
         total_failed += 1
         return
     except KeyboardInterrupt:
