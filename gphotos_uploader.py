@@ -1711,6 +1711,17 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
         log_warn(f"⏭️  Skipping {file.name} (already marked as too large)")
         return
 
+    already_uploaded = file.name in set(state.get(folder_name, {}).get('files', []))
+
+    # Align filesystem/EXIF dates before the unsupported-format check: whether a format
+    # can be uploaded to Google Photos is unrelated to whether its dates need fixing, so
+    # this must not be skipped just because the file is about to be judged unsupported.
+    # Skipped for files already uploaded, same as before, to avoid re-downloading and
+    # re-running exiftool on the whole library on every --fix-dates run.
+    if FIX_DATES and not already_uploaded:
+        force_file_download(file)
+        _fix_file_dates(file, folder_name)
+
     # CHECK MEDIA TYPE before state — unsupported files must always be moved out,
     # even if they appear in state from a run before GPHOTOS_SUPPORTED_EXTS existed.
     if not is_supported_media(file):
@@ -1724,7 +1735,7 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
         return
 
     # Check if file is already in state
-    if file.name in set(state.get(folder_name, {}).get('files', [])):
+    if already_uploaded:
         log_warn(f"⏭️  Already uploaded, skipping: {file.name}")
         return
 
@@ -1757,10 +1768,6 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
         add_failure("TooLarge", folder_name, file.name, folder_path)
         total_failed += 1
         return
-
-    if FIX_DATES:
-        force_file_download(file)
-        _fix_file_dates(file, folder_name)
 
     # Upload attempt for all files
     if DRY_RUN:
