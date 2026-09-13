@@ -59,36 +59,22 @@ log_init("[INIT] Script starting...")
 
 SUPPORTED_EXIF_EXT = ('.jpg', '.jpeg', '.heic', '.heif', '.cr2', '.tif', '.tiff', '.mov', '.mp4', '.nef', '.flv', '.avi', '.m4v', '.mgg', '.rw2')
 
-# Formats that produce a valid image/* or video/* MIME type but are NOT accepted by Google Photos
-GPHOTOS_UNSUPPORTED_EXTS = {'.flv', '.f4v', '.swf', '.psd', '.pct', '.pict'}
+# Extensions Google Photos actually accepts as media items. MIME-type detection is
+# NOT used here: Python's mimetypes module maps plenty of formats (.psd, .pct, ...)
+# to image/* or video/* even though Google Photos rejects them at upload time, so a
+# MIME check would keep letting those through until each one is separately blacklisted.
+GPHOTOS_SUPPORTED_EXTS = {
+    # Images
+    ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
+    ".heic", ".heif", ".raw", ".cr2", ".nef", ".rw2", ".orf", ".dng", ".tif", ".tiff",
+    # Video
+    ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm",
+    ".m4v", ".3gp", ".3g2", ".mts", ".m2ts", ".wm"
+}
 
 def is_supported_media(file_path: Path) -> bool:
-    """Check if file is a supported Google Photos media type (image or video)
-
-    Tries MIME type first, then falls back to extension if MIME is unreliable.
-    """
-    ext = file_path.suffix.lower()
-
-    # Reject formats not accepted by Google Photos even if they have a valid MIME type
-    if ext in GPHOTOS_UNSUPPORTED_EXTS:
-        return False
-
-    mime_type, _ = mimetypes.guess_type(str(file_path))
-
-    # Primary: MIME type detection
-    if mime_type:
-        return mime_type.startswith('image/') or mime_type.startswith('video/')
-
-    # Fallback: extension whitelist (for cases where MIME is missing or unreliable)
-    supported_exts = {
-        # Images
-        ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp",
-        ".heic", ".heif", ".raw", ".cr2", ".nef", ".rw2", ".orf", ".dng", ".tif", ".tiff",
-        # Video
-        ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".webm",
-        ".m4v", ".3gp", ".3g2", ".mts", ".m2ts", ".wm"
-    }
-    return ext in supported_exts
+    """Check if file extension is in Google Photos' supported format whitelist."""
+    return file_path.suffix.lower() in GPHOTOS_SUPPORTED_EXTS
 
 # === CLI ===
 log_init("[INIT] Setting up argument parser...")
@@ -1726,7 +1712,7 @@ async def process_file(file: Path, folder_name: str, album_id: str, folder_path:
         return
 
     # CHECK MEDIA TYPE before state — unsupported files must always be moved out,
-    # even if they appear in state from a run before GPHOTOS_UNSUPPORTED_EXTS existed.
+    # even if they appear in state from a run before GPHOTOS_SUPPORTED_EXTS existed.
     if not is_supported_media(file):
         mime_type, _ = mimetypes.guess_type(str(file))
         log_warn(f"❌ Unsupported media type: {file.name} (MIME: {mime_type or 'unknown'}) - moving to _UNSUPPORTED")
