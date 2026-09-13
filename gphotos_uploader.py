@@ -59,8 +59,8 @@ log_init("[INIT] Script starting...")
 
 SUPPORTED_EXIF_EXT = ('.jpg', '.jpeg', '.heic', '.heif', '.cr2', '.tif', '.tiff', '.mov', '.mp4', '.nef', '.flv', '.avi', '.m4v', '.mgg', '.rw2')
 
-# Formats that produce a valid video/* MIME type but are NOT accepted by Google Photos
-GPHOTOS_UNSUPPORTED_EXTS = {'.flv', '.f4v', '.swf'}
+# Formats that produce a valid image/* or video/* MIME type but are NOT accepted by Google Photos
+GPHOTOS_UNSUPPORTED_EXTS = {'.flv', '.f4v', '.swf', '.psd', '.pct', '.pict'}
 
 def is_supported_media(file_path: Path) -> bool:
     """Check if file is a supported Google Photos media type (image or video)
